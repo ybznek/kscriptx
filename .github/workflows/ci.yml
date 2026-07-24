@@ -107,6 +107,7 @@ jobs:
 
       - name: Upload reports
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ci-reports
@@ -117,3 +118,4 @@ jobs:
             cli/build/reports/perf/
             build/reports/perf/
           if-no-files-found: warn
+          retention-days: 7

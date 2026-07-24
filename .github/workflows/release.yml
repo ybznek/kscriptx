@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release (e.g. 0.1.1). Creates tag v<version> if missing."
+        description: "Version to release (e.g. 0.1.2). Creates tag v<version> if missing."
         required: true
         type: string
 
@@ -39,8 +39,44 @@ jobs:
           echo "tag=v$V" >>"$GITHUB_OUTPUT"
           echo "Releasing $V (tag v$V)"
 
-  linux:
+  prepare:
     needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure GitHub Release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if ! git ls-remote --tags origin "refs/tags/${TAG}" | grep -q .; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" -m "Release $TAG"
+            git push origin "$TAG"
+          fi
+          NOTES="$(mktemp)"
+          {
+            echo "## kscriptx ${VERSION}"
+            echo
+            echo "_Building packages… assets will appear as jobs finish._"
+            echo
+            echo "### Packages"
+            echo "- **Debian/Ubuntu amd64:** \`kscriptx_${VERSION}_amd64.deb\` — includes native kotlinc"
+            echo "- **Debian/Ubuntu arm64 (Raspberry Pi):** \`kscriptx_${VERSION}_arm64.deb\` — includes native kotlinc"
+            echo "- **Linux portable amd64/arm64:** \`kscriptx-${VERSION}-linux-*.tar.gz\` (native included)"
+            echo "- **Windows portable:** \`kscriptx-${VERSION}-windows-amd64.zip\` (JDK 17+; native kotlinc not bundled)"
+          } >"$NOTES"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file "$NOTES" --draft=false
+          else
+            gh release create "$TAG" --title "kscriptx ${VERSION}" --notes-file "$NOTES"
+          fi
+
+  linux:
+    needs: [version, prepare]
     strategy:
       fail-fast: false
       matrix:
@@ -84,28 +120,27 @@ jobs:
           ./scripts/package-dist.sh "$VERSION"
           ./scripts/package-tarball.sh "$VERSION" "$ARCH"
           ./scripts/package-deb.sh "$VERSION" "$NATIVE_DIR"
-          ./scripts/package-native-kotlinc.sh "$VERSION" "$NATIVE_DIR" "$ARCH"
-          # Portable windows zip only from amd64 job (JVM jars)
-          if [[ "$ARCH" == "amd64" ]]; then
-            ./scripts/package-windows.sh "$VERSION"
-          fi
+          # Skip separate native-only tarball (already inside deb + linux tarball)
           ls -lh dist/
           test -f "dist/kscriptx_${VERSION}_${ARCH}.deb"
           test -f "dist/kscriptx-${VERSION}-linux-${ARCH}.tar.gz"
           test -x "dist/kscriptx-${VERSION}/bin/native-kotlinc/kotlinc-native"
 
-      - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-packages-${{ matrix.arch }}
-          path: |
-            dist/*.tar.gz
-            dist/*.deb
-            dist/*.zip
-          if-no-files-found: error
+      - name: Upload assets to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" \
+            "dist/kscriptx_${VERSION}_${ARCH}.deb" \
+            "dist/kscriptx-${VERSION}-linux-${ARCH}.tar.gz" \
+            --clobber
 
   windows:
-    needs: version
+    needs: [version, prepare]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -132,56 +167,29 @@ jobs:
           ls -lh dist/
           test -f "dist/kscriptx-${VERSION}-windows-amd64.zip"
 
-      - name: Upload Windows artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-packages
-          path: dist/*.zip
-          if-no-files-found: error
-
-  publish:
-    needs: [version, linux, windows]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: release-assets
-
-      - name: Flatten assets
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          mkdir -p assets
-          find release-assets -type f \( -name '*.deb' -o -name '*.tar.gz' -o -name '*.zip' \) -print0 |
-            while IFS= read -r -d '' f; do
-              base="$(basename "$f")"
-              if [[ ! -e "assets/$base" ]]; then
-                cp -v "$f" "assets/$base"
-              fi
-            done
-          ls -lh assets/
-          test -f "assets/kscriptx_${VERSION}_amd64.deb"
-          test -f "assets/kscriptx_${VERSION}_arm64.deb"
-          test -f "assets/kscriptx-${VERSION}-linux-amd64.tar.gz"
-          test -f "assets/kscriptx-${VERSION}-linux-arm64.tar.gz"
-          test -f "assets/kscriptx-${VERSION}-windows-amd64.zip"
-
-      - name: Create GitHub Release
+      - name: Upload assets to GitHub Release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.version.outputs.tag }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
-          if ! git ls-remote --tags origin "refs/tags/${TAG}" | grep -q .; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git tag -a "$TAG" -m "Release $TAG"
-            git push origin "$TAG"
-          fi
+          set -euo pipefail
+          gh release upload "$TAG" \
+            "dist/kscriptx-${VERSION}-windows-amd64.zip" \
+            --clobber
 
+  finalize:
+    needs: [version, linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Finalize release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
           NOTES="$(mktemp)"
           {
             echo "## kscriptx ${VERSION}"
@@ -199,12 +207,12 @@ jobs:
             echo "kscriptx examples/hello.kts"
             echo '```'
           } >"$NOTES"
-
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" assets/* --clobber
-            gh release edit "$TAG" --notes-file "$NOTES"
-          else
-            gh release create "$TAG" assets/* \
-              --title "kscriptx ${VERSION}" \
-              --notes-file "$NOTES"
-          fi
+          gh release edit "$TAG" --notes-file "$NOTES" --draft=false
+          # Verify expected assets exist
+          assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          echo "$assets"
+          echo "$assets" | grep -qx "kscriptx_${VERSION}_amd64.deb"
+          echo "$assets" | grep -qx "kscriptx_${VERSION}_arm64.deb"
+          echo "$assets" | grep -qx "kscriptx-${VERSION}-linux-amd64.tar.gz"
+          echo "$assets" | grep -qx "kscriptx-${VERSION}-linux-arm64.tar.gz"
+          echo "$assets" | grep -qx "kscriptx-${VERSION}-windows-amd64.zip"
