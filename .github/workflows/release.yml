@@ -183,9 +183,11 @@ jobs:
     needs: [version, linux, windows]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Finalize release notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.version.outputs.tag }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
@@ -208,11 +210,14 @@ jobs:
             echo '```'
           } >"$NOTES"
           gh release edit "$TAG" --notes-file "$NOTES" --draft=false
-          # Verify expected assets exist
           assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
           echo "$assets"
-          echo "$assets" | grep -qx "kscriptx_${VERSION}_amd64.deb"
-          echo "$assets" | grep -qx "kscriptx_${VERSION}_arm64.deb"
-          echo "$assets" | grep -qx "kscriptx-${VERSION}-linux-amd64.tar.gz"
-          echo "$assets" | grep -qx "kscriptx-${VERSION}-linux-arm64.tar.gz"
-          echo "$assets" | grep -qx "kscriptx-${VERSION}-windows-amd64.zip"
+          for need in \
+            "kscriptx_${VERSION}_amd64.deb" \
+            "kscriptx_${VERSION}_arm64.deb" \
+            "kscriptx-${VERSION}-linux-amd64.tar.gz" \
+            "kscriptx-${VERSION}-linux-arm64.tar.gz" \
+            "kscriptx-${VERSION}-windows-amd64.zip"
+          do
+            echo "$assets" | grep -Fxq "$need" || { echo "missing asset: $need" >&2; exit 1; }
+          done
