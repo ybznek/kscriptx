@@ -14,7 +14,7 @@ import io.kscriptx.exec.ScriptRunner
 import kotlin.io.path.Path
 import kotlin.system.exitProcess
 
-const val VERSION = "0.1.1"
+const val VERSION = "0.1.2"
 
 fun main(args: Array<String>) {
     val request = ArgParser.parse(args)
@@ -48,7 +48,7 @@ fun main(args: Array<String>) {
         return
     }
 
-    KPaths.ensureLayout()
+    KPaths.ensureRuntimeLayout()
     val userConfig = UserConfig.load()
     val resolved = ScriptResolver.resolve(
         source = scriptSource,
@@ -59,6 +59,7 @@ fun main(args: Array<String>) {
 
     when (request.mode) {
         RunMode.IDEA -> {
+            KPaths.ensureLayout()
             IdeaProjectGenerator.generateAndOpen(resolved)
         }
         RunMode.INTERACTIVE -> {

@@ -49,16 +49,17 @@ object ScriptCompiler {
     private val lock = Any()
 
     fun compile(script: ResolvedScript): CompiledScript {
+        val hash = CacheStore.hashOf(script)
+        CacheStore.load(hash, script.config.kotlinOptions)?.let { return it }
+
         require(NativeKotlincCompiler.isAvailable()) {
-            "Native kotlinc is required. Looked in:\n" +
+            "Native kotlinc is required (cache miss). Looked in:\n" +
                 NativeKotlincCompiler.candidateRoots().joinToString("\n") { "  - $it" } +
                 "\nInstall the Debian package (includes native), unpack a release tarball, " +
                 "or run ./scripts/build-native-kotlinc.sh (or set KSCRIPTX_NATIVE_KOTLINC)."
         }
 
-        val hash = CacheStore.hashOf(script)
-        CacheStore.load(hash, script.config.kotlinOptions)?.let { return it }
-
+        KPaths.ensureLayout()
         val entry = entryPointOf(script)
         val sources = ScriptWrapper.toCompilableSources(script)
         val depsHash = DepsClasspathStore.hashOf(script, entry)

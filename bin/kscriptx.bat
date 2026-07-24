@@ -10,6 +10,9 @@ if not exist "%JAR%" (
 set "CP=%JAR%"
 if exist "%DIR%lib\" set "CP=%JAR%;%DIR%lib\*"
 
+REM Short-lived CLI JVM tuning (warm cache hits).
+set "KSX_JAVA_OPTS=-XX:TieredStopAtLevel=1 -XX:+UseSerialGC"
+
 REM Rebuild argv with quotes so inline scripts keep "..." literals
 set "ARGS="
 :collect
@@ -19,5 +22,5 @@ shift
 goto collect
 
 :run
-java -cp "%CP%" io.kscriptx.MainKt %ARGS%
+java %KSX_JAVA_OPTS% %KSCRIPTX_JAVA_OPTS% -cp "%CP%" io.kscriptx.MainKt %ARGS%
 exit /b %ERRORLEVEL%

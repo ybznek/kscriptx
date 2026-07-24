@@ -14,6 +14,12 @@ object KPaths {
     val idea: Path = home / "idea"
     val configFile: Path = resolveConfigFile()
 
+    /** Hot-path dirs only (cache hits should not mkdir the whole tree). */
+    fun ensureRuntimeLayout() {
+        home.createDirectories()
+        cache.createDirectories()
+    }
+
     fun ensureLayout() {
         listOf(
             home, cache, depsCache, urlCache, compiler, idea,

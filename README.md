@@ -127,7 +127,7 @@ CLI  →  parse annotations / resolve imports
 ```
 
 Typical timings (this machine): **~0.2–0.4s** cold compile with native kotlinc;
-**~0.15–0.25s** cache hit.
+**~0.09–0.12s** cache hit after AppCDS warms (first hit builds `~/.kscriptx/cds/`).
 
 ## Native kotlinc
 
@@ -170,8 +170,10 @@ Agent metadata and PathUtil substitution: `scripts/native-kotlinc/`.
 | `$home/idea` | Generated IDEA projects |
 | `$home/native-kotlinc` | Native kotlinc install |
 | `KSCRIPTX_NATIVE_KOTLINC` | Override native install dir |
+| `KSCRIPTX_JAVA_OPTS` | Extra JVM flags for the launcher |
 | `KSCRIPT_COMMAND_IDEA` | IDEA launcher |
 | `KSCRIPT_COMMAND_GRADLE` | Optional gradle for `--idea` |
+| `$home/cds/` | AppCDS archive (auto-built; speeds warm starts) |
 
 Optional config file (`kscript.properties`): `scripting.preamble`, `scripting.kotlin.opts`,
 `scripting.repository.url`, etc.

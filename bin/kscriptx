@@ -11,4 +11,43 @@ CP="$JAR"
 if [[ -d "$LIB" ]]; then
   CP="$CP:$LIB/*"
 fi
-exec java -cp "$CP" io.kscriptx.MainKt "$@"
+
+# Short-lived CLI: C1 only + SerialGC starts faster than default tiered/G1.
+JAVA_OPTS=(
+  -XX:TieredStopAtLevel=1
+  -XX:+UseSerialGC
+  -Xlog:cds=off
+)
+
+# AppCDS: reuse a shared class archive under ~/.kscriptx/cds (big warm-start win).
+KS_HOME="${KSCRIPTX_DIRECTORY:-${KSCRIPT_DIRECTORY:-$HOME/.kscriptx}}"
+CDS_DIR="$KS_HOME/cds"
+CDS_FILE="$CDS_DIR/classes.jsa"
+CDS_STAMP="$CDS_DIR/classpath.stamp"
+stamp_classpath() {
+  # Fast invalidate key: size+mtime of launcher jars (no hashing).
+  local s
+  s="$(stat -c '%s.%Y' "$JAR" 2>/dev/null || stat -f '%z.%m' "$JAR" 2>/dev/null || echo x)"
+  if [[ -d "$LIB" ]]; then
+    local f
+    for f in "$LIB"/*.jar; do
+      [[ -f "$f" ]] || continue
+      s+=":$(stat -c '%s.%Y' "$f" 2>/dev/null || stat -f '%z.%m' "$f" 2>/dev/null || echo x)"
+    done
+  fi
+  printf '%s' "$s"
+}
+STAMP="$(stamp_classpath)"
+if [[ -f "$CDS_FILE" && -f "$CDS_STAMP" && "$(cat "$CDS_STAMP" 2>/dev/null || true)" == "$STAMP" ]]; then
+  JAVA_OPTS+=(-XX:SharedArchiveFile="$CDS_FILE")
+else
+  mkdir -p "$CDS_DIR"
+  # Create/refresh archive on exit for the next invocation.
+  JAVA_OPTS+=(-XX:ArchiveClassesAtExit="$CDS_FILE")
+  printf '%s' "$STAMP" >"$CDS_STAMP"
+fi
+
+# Allow users to append flags via JAVA_OPTS / KSCRIPTX_JAVA_OPTS.
+# shellcheck disable=SC2206
+EXTRA=( ${KSCRIPTX_JAVA_OPTS:-} ${JAVA_OPTS_EXTRA:-} )
+exec java "${JAVA_OPTS[@]}" "${EXTRA[@]}" -cp "$CP" io.kscriptx.MainKt "$@"

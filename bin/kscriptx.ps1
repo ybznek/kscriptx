@@ -10,10 +10,16 @@ if (Test-Path $lib) {
     $cp = "$jar;$lib\*"
 }
 
+# Short-lived CLI JVM tuning (warm cache hits).
+$ksxOpts = @("-XX:TieredStopAtLevel=1", "-XX:+UseSerialGC")
+if ($env:KSCRIPTX_JAVA_OPTS) {
+    $ksxOpts += $env:KSCRIPTX_JAVA_OPTS.Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries)
+}
+
 # Forward pipeline input to Java (PowerShell does not do this automatically for child processes).
 if ($MyInvocation.ExpectingInput) {
-    $input | & java -cp $cp io.kscriptx.MainKt @args
+    $input | & java @ksxOpts -cp $cp io.kscriptx.MainKt @args
 } else {
-    & java -cp $cp io.kscriptx.MainKt @args
+    & java @ksxOpts -cp $cp io.kscriptx.MainKt @args
 }
 exit $LASTEXITCODE
