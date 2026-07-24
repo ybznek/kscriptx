@@ -3,7 +3,7 @@
 Kotlin scripting with **kscript feature parity**: Coursier for dependencies, GraalVM
 **native kotlinc** for compiles, content-addressed caching, and in-process script execution.
 
-Successor to `kscript2`. Gradle is used only to **build kscriptx** and for optional `--idea`
+Successor to [kscript](https://github.com/kscripting/kscript). Gradle is used only to **build kscriptx** and for optional `--idea`
 projects — not on the script hot path.
 
 Stack: **Kotlin 2.4.10** · **Gradle 9.6.1** (project build only).
@@ -179,3 +179,19 @@ Optional config file (`kscript.properties`): `scripting.preamble`, `scripting.ko
 ## License
 
 MIT — inspired by [kscripting/kscript](https://github.com/kscripting/kscript).
+
+## CI
+
+GitHub Actions (`.github/workflows/ci.yml`) on every push/PR:
+
+- Unit tests + **JaCoCo** coverage (XML/HTML artifacts)
+- Micro-benchmarks (parser / hash / wrapper) and CLI timings (`scripts/bench.sh`)
+- Job summary with coverage % and performance tables
+
+Locally:
+
+```bash
+./gradlew :cli:coverage
+./scripts/coverage-summary.sh cli/build/reports/jacoco/test/jacocoTestReport.xml
+./gradlew :cli:build && ./scripts/bench.sh
+```

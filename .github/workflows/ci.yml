@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test + coverage + perf
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Cache native kotlinc (optional)
+        id: cache-native
+        uses: actions/cache@v4
+        with:
+          path: ~/.kscriptx/native-kotlinc
+          key: native-kotlinc-${{ runner.os }}-kotlin-2.4.10-${{ hashFiles('scripts/build-native-kotlinc.sh', 'scripts/native-kotlinc/**') }}
+          restore-keys: |
+            native-kotlinc-${{ runner.os }}-kotlin-2.4.10-
+
+      - name: Unit tests + JaCoCo coverage
+        run: |
+          chmod +x gradlew scripts/*.sh
+          ./gradlew :cli:coverage --no-daemon
+
+      - name: Build CLI distribution
+        run: ./gradlew :cli:build --no-daemon
+
+      - name: CLI performance bench
+        run: ./scripts/bench.sh build/reports/perf
+
+      - name: Write job summary
+        if: always()
+        run: |
+          {
+            echo "## kscriptx CI"
+            echo
+            echo "### Tests"
+            if [[ -d cli/build/test-results/test ]]; then
+              python3 - <<'PY'
+          import pathlib, xml.etree.ElementTree as ET
+          total = fails = errors = skipped = 0
+          for p in pathlib.Path("cli/build/test-results/test").glob("TEST-*.xml"):
+              root = ET.parse(p).getroot()
+              total += int(root.get("tests", 0))
+              fails += int(root.get("failures", 0))
+              errors += int(root.get("errors", 0))
+              skipped += int(root.get("skipped", 0))
+          print(f"| Result | Count |")
+          print(f"|---|---:|")
+          print(f"| Total | {total} |")
+          print(f"| Failures | {fails} |")
+          print(f"| Errors | {errors} |")
+          print(f"| Skipped | {skipped} |")
+          print()
+          PY
+            else
+              echo "_No JUnit XML found._"
+              echo
+            fi
+
+            XML="cli/build/reports/jacoco/test/jacocoTestReport.xml"
+            if [[ -f "$XML" ]]; then
+              ./scripts/coverage-summary.sh "$XML"
+            else
+              echo "### Coverage"
+              echo
+              echo "_JaCoCo XML not found._"
+              echo
+            fi
+
+            if [[ -f cli/build/reports/perf/microbench.md ]]; then
+              cat cli/build/reports/perf/microbench.md
+            fi
+
+            if [[ -f build/reports/perf/cli-bench.md ]]; then
+              cat build/reports/perf/cli-bench.md
+            fi
+
+            if [[ -x "$HOME/.kscriptx/native-kotlinc/kotlinc-native" ]]; then
+              echo "Native kotlinc: **cached/present** — cold/warm script timings included."
+            else
+              echo "Native kotlinc: **not present** — cold/warm script timings skipped (cache miss)."
+            fi
+            echo
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-reports
+          path: |
+            cli/build/reports/tests/
+            cli/build/reports/jacoco/
+            cli/build/test-results/
+            cli/build/reports/perf/
+            build/reports/perf/
+          if-no-files-found: warn

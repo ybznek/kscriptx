@@ -1,6 +1,7 @@
 plugins {
     kotlin("jvm") version "2.4.10"
     application
+    jacoco
 }
 
 group = "io.kscriptx"
@@ -10,7 +11,7 @@ repositories {
     mavenCentral()
 }
 
-val compilerClasspath by configurations.creating
+val compilerClasspath = configurations.create("compilerClasspath")
 
 dependencies {
     implementation(kotlin("stdlib"))
@@ -38,6 +39,30 @@ java {
 
 tasks.test {
     useJUnitPlatform()
+    reports.junitXml.required.set(true)
+    finalizedBy(tasks.jacocoTestReport)
+}
+
+tasks.jacocoTestReport {
+    dependsOn(tasks.test)
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+        csv.required.set(false)
+    }
+    classDirectories.setFrom(
+        files(classDirectories.files.map {
+            fileTree(it) {
+                exclude("**/MainKt.class")
+            }
+        })
+    )
+}
+
+tasks.register("coverage") {
+    group = "verification"
+    description = "Run tests and generate JaCoCo XML/HTML reports"
+    dependsOn(tasks.test, tasks.jacocoTestReport)
 }
 
 tasks.jar {
