@@ -108,11 +108,23 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      # ubuntu-24.04-arm is ~8GB RAM; GraalVM 25 native-image for kotlinc needs more.
+      - name: Add swap for native-image (arm64)
+        if: matrix.arch == 'arm64'
+        run: |
+          set -euo pipefail
+          sudo fallocate -l 12G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=12288
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
       - name: Build CLI + native kotlinc + packages
         env:
           VERSION: ${{ needs.version.outputs.version }}
           ARCH: ${{ matrix.arch }}
-          NATIVE_IMAGE_OPTIONS: "-J-Xmx5g"
+          # Cap builder heap so the C linker / OS still have room (esp. on arm).
+          NATIVE_IMAGE_OPTIONS: ${{ matrix.arch == 'arm64' && '-J-Xmx6g' || '-J-Xmx5g' }}
           # Prefer setup-graalvm's install; don't try SDKMAN on runners.
           ENSURE_LATEST_GRAAL: "0"
         run: |

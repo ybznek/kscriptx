@@ -77,6 +77,11 @@ val nativeProjectDir = rootProject.layout.projectDirectory.dir("native")
 tasks.register<Exec>("compileNativeHelpers") {
     group = "build"
     description = "Build Rust helpers (kscriptx-dclient, kscriptx-coverage) into bin/"
+    // Windows portable packages use the JVM launcher; skip Rust helpers there
+    // (Git Bash often hits a broken cargo→WSL stub on Actions runners).
+    onlyIf {
+        !org.gradle.internal.os.OperatingSystem.current().isWindows
+    }
     commandLine("bash", rootProject.file("scripts/build-native-helpers.sh").absolutePath)
     inputs.files(
         nativeProjectDir.file("Cargo.toml"),
