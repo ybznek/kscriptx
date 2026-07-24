@@ -13,5 +13,6 @@ bin/kscriptx.jar
 bin/lib/
 bin/lib-compiler/
 *.jar
+!gradle/wrapper/gradle-wrapper.jar
 !cli/src/main/resources/**/*.jar
 !scripts/native-kotlinc/**/*.jar
