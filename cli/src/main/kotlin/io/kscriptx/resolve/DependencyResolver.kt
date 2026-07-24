@@ -42,7 +42,8 @@ object DependencyResolver {
         dependencies: List<String>,
         repositories: List<ScriptRepository>,
     ): String {
-        val gavs = (dependencies + "org.jetbrains.kotlin:kotlin-stdlib:${KscriptVersions.KOTLIN}")
+        val userDeps = dependencies.distinct()
+        val gavs = (userDeps + "org.jetbrains.kotlin:kotlin-stdlib:${KscriptVersions.KOTLIN}")
             .distinct()
             .map { parseGav(it) }
 
@@ -55,9 +56,14 @@ object DependencyResolver {
             GradleModules2Cache.seedIntoMavenLocal(privateM2, gav)
         }
 
-        // Fast path: all jars already present locally (no Coursier).
-        classpathFromLocalM2(userM2, gavs)?.let { return it }
-        classpathFromLocalM2(privateM2, gavs)?.let { return it }
+        // Fast path ONLY when there are no user deps: stdlib has no script-relevant transitives.
+        // Returning only direct GAV jars for real deps would omit Coursier’s transitive closure
+        // and poison DepsClasspathStore — so non-empty deps always go through Coursier
+        // (which still prefers local m2 / modules-2 via repo list, often with zero downloads).
+        if (userDeps.isEmpty()) {
+            classpathFromLocalM2(userM2, gavs)?.let { return it }
+            classpathFromLocalM2(privateM2, gavs)?.let { return it }
+        }
 
         val cacheDir = (KPaths.home / "coursier-cache").also { it.createDirectories() }.toFile()
         val resolved = fetchWithCoursier(gavs, repositories, userM2.toFile(), privateM2.toFile(), cacheDir)
@@ -67,7 +73,7 @@ object DependencyResolver {
         return resolved
     }
 
-    /** Build classpath from a Maven-layout repo when every GAV jar is present. */
+    /** Build classpath from a Maven-layout repo when every listed GAV jar is present. */
     private fun classpathFromLocalM2(localM2: Path, gavs: List<GradleModules2Cache.Gav>): String? {
         val jars = ArrayList<String>(gavs.size)
         for (gav in gavs) {

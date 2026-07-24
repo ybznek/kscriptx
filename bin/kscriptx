@@ -15,6 +15,7 @@ fi
 
 KS_HOME="${KSCRIPTX_DIRECTORY:-${KSCRIPT_DIRECTORY:-$HOME/.kscriptx}}"
 DAEMON_PORT_FILE="$KS_HOME/daemon/port"
+DAEMON_SOCK_FILE="$KS_HOME/daemon/sock"
 
 # --no-daemon / --daemon in argv (incl. shebang via env -S) override env.
 daemon_cli_override=""
@@ -36,24 +37,32 @@ daemon_enabled() {
   esac
 }
 
-# Fast path: native loopback client (no Python).
+# Fast path: native local-socket client (UDS preferred, TCP fallback).
 # Skip for daemon-server bootstrap (`kscriptx --daemon` / `--daemon-server`).
 server_bootstrap=0
 if [[ $# -eq 1 && ( "$1" == "--daemon" || "$1" == "--daemon-server" ) ]]; then
   server_bootstrap=1
 fi
 
-if [[ "$server_bootstrap" -eq 0 ]] && daemon_enabled && [[ -x "$DCLIENT" && -f "$DAEMON_PORT_FILE" ]]; then
-  PORT="$(tr -d '[:space:]' <"$DAEMON_PORT_FILE" || true)"
-  if [[ "$PORT" =~ ^[0-9]+$ ]]; then
-    set +e
-    "$DCLIENT" "$PORT" "$@"
+if [[ "$server_bootstrap" -eq 0 ]] && daemon_enabled && [[ -x "$DCLIENT" ]]; then
+  set +e
+  if [[ -S "$DAEMON_SOCK_FILE" || -e "$DAEMON_SOCK_FILE" ]]; then
+    "$DCLIENT" --unix "$DAEMON_SOCK_FILE" "$@"
     status=$?
-    set -e
-    # 99 = daemon not reachable — fall through to JVM
-    if [[ "$status" -ne 99 ]]; then
-      exit "$status"
+  else
+    status=99
+    if [[ -f "$DAEMON_PORT_FILE" ]]; then
+      PORT="$(tr -d '[:space:]' <"$DAEMON_PORT_FILE" || true)"
+      if [[ "$PORT" =~ ^[0-9]+$ ]]; then
+        "$DCLIENT" --tcp "$PORT" "$@"
+        status=$?
+      fi
     fi
+  fi
+  set -e
+  # 99 = daemon not reachable — fall through to JVM
+  if [[ "$status" -ne 99 ]]; then
+    exit "$status"
   fi
 fi
 

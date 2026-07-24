@@ -87,10 +87,10 @@ if [[ "$NATIVE" == "yes" && -n "$WARM_MS" && -x "$(dirname "$KS")/kscriptx-dclie
     >"$HOME_TMP/daemon-bench.log" 2>&1 &
   DAEMON_PID=$!
   for _ in $(seq 1 50); do
-    [[ -f "$HOME_TMP/daemon/port" ]] && break
+    [[ -e "$HOME_TMP/daemon/sock" || -f "$HOME_TMP/daemon/port" ]] && break
     sleep 0.05
   done
-  if [[ -f "$HOME_TMP/daemon/port" ]]; then
+  if [[ -e "$HOME_TMP/daemon/sock" || -f "$HOME_TMP/daemon/port" ]]; then
     # one priming hit (fills in-memory FastCache + classloader cache)
     "$KS" "$SCRIPT" >/dev/null
     WARM_DAEMON_MS="$(median3 "$KS" "$SCRIPT")"

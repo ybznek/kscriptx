@@ -42,18 +42,15 @@ cp -a "$ROOT/bin/lib" "$OUT/bin/"
 if [[ -d "$ROOT/bin/lib-resolve" ]]; then
   cp -a "$ROOT/bin/lib-resolve" "$OUT/bin/"
 fi
-if [[ -d "$ROOT/bin/lib-compiler" ]]; then
-  cp -a "$ROOT/bin/lib-compiler" "$OUT/bin/"
-fi
+# Do NOT ship bin/lib-compiler (~65MB kotlin-compiler-embeddable). It is only needed to
+# *build* native kotlinc; runtime uses native-kotlinc/kotlin-compiler-embeddable.jar sidecar.
 install -m 0755 "$ROOT/bin/kscriptx" "$OUT/bin/"
 install -m 0644 "$ROOT/bin/kscriptx.bat" "$OUT/bin/"
 install -m 0644 "$ROOT/bin/kscriptx.ps1" "$OUT/bin/"
 if [[ -x "$ROOT/bin/kscriptx-dclient" ]]; then
   install -m 0755 "$ROOT/bin/kscriptx-dclient" "$OUT/bin/"
 fi
-if [[ -x "$ROOT/bin/kscriptx-coverage" ]]; then
-  install -m 0755 "$ROOT/bin/kscriptx-coverage" "$OUT/bin/"
-fi
+# kscriptx-coverage is a CI helper — keep it out of user packages.
 install -m 0644 "$ROOT/README.md" "$OUT/share/doc/kscriptx/"
 install -m 0644 "$ROOT/LICENSE" "$OUT/share/doc/kscriptx/"
 

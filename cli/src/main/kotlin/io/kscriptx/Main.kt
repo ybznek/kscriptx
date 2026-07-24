@@ -122,9 +122,7 @@ fun runMain(args: Array<String>, fromDaemon: Boolean): Int {
                 FastCache.remember(
                     scriptPath = root,
                     textMode = request.textMode,
-                    userConfig = userConfig,
-                    contentHash = compiled.hash,
-                    kotlinOptions = compiled.kotlinOptions,
+                    compiled = compiled,
                     importOrigins = resolved.sources.mapNotNull { it.origin },
                 )
             }
