@@ -59,7 +59,7 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build and package (tar + deb)
+      - name: Build and package (tar + deb + windows zip)
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
@@ -69,6 +69,7 @@ jobs:
           ./scripts/package-dist.sh "$VERSION"
           ./scripts/package-tarball.sh "$VERSION"
           ./scripts/package-deb.sh "$VERSION"
+          ./scripts/package-windows.sh "$VERSION"
           ls -lh dist/
 
       - name: Build native kotlinc (optional, heavy)
@@ -96,6 +97,7 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.deb
+            dist/*.zip
           if-no-files-found: error
 
   windows:
@@ -124,6 +126,7 @@ jobs:
           ./scripts/package-dist.sh "$VERSION"
           ./scripts/package-windows.sh "$VERSION"
           ls -lh dist/
+          test -f "dist/kscriptx-${VERSION}-windows-amd64.zip"
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -146,8 +149,18 @@ jobs:
       - name: Flatten assets
         run: |
           mkdir -p assets
-          find release-assets -type f \( -name '*.deb' -o -name '*.tar.gz' -o -name '*.zip' \) -exec cp -v {} assets/ \;
+          find release-assets -type f \( -name '*.deb' -o -name '*.tar.gz' -o -name '*.zip' \) -print0 |
+            while IFS= read -r -d '' f; do
+              base="$(basename "$f")"
+              # Prefer a single copy of each filename (linux + windows may both ship the zip)
+              if [[ ! -e "assets/$base" ]]; then
+                cp -v "$f" "assets/$base"
+              fi
+            done
           ls -lh assets/
+          test -f "assets/kscriptx_${{ needs.version.outputs.version }}_all.deb"
+          test -f "assets/kscriptx-${{ needs.version.outputs.version }}-linux-amd64.tar.gz"
+          test -f "assets/kscriptx-${{ needs.version.outputs.version }}-windows-amd64.zip"
 
       - name: Create GitHub Release
         env:
