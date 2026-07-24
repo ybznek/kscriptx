@@ -2,20 +2,23 @@
 # Build a GraalVM native-image of Kotlin's K2JVMCompiler and install it for kscriptx.
 #
 # Prerequisites:
-#   - GraalVM JDK 21+ with native-image on PATH (or via SDKMAN: 21.0.2-graalce)
-#   - A JDK with jmods (for java.base.jar); defaults to JAVA_HOME / system OpenJDK 21
+#   - Newest GraalVM CE with native-image (auto-resolved / installed via SDKMAN)
+#   - A JDK with jmods (for java.base.jar); defaults to JAVA_HOME / system OpenJDK
 #   - kscriptx compiler jars: run `./gradlew :cli:build` first (bin/lib-compiler/)
 #
 # Usage:
 #   ./scripts/build-native-kotlinc.sh
 #   INSTALL_DIR=~/.kscriptx/native-kotlinc ./scripts/build-native-kotlinc.sh
 #   SKIP_INSTALL=1 ./scripts/build-native-kotlinc.sh   # only build under WORK_DIR
+#   ENSURE_LATEST_GRAAL=0 ./scripts/build-native-kotlinc.sh  # don't sdk-install
+#   GRAALVM_HOME=/path/to/graalvm ./scripts/build-native-kotlinc.sh
 #
 # Workarounds baked in (see README):
 #   - exclude broken jline / embeddable META-INF/native-image configs
 #   - PathUtil @Substitute → sidecar kotlin-compiler-embeddable.jar
-#   - -H:+AddAllCharsets
-#   - -no-jdk + extracted java.base.jar (JRT / -jdk-home still unsupported)
+#   - JansiLoader @Substitute → skip /tmp native extract (needs rebuild)
+#   - -no-jdk + trimmed java.base.jar (scripts/trim-java-base.sh)
+#   - optional PGO: ./scripts/pgo-profile-kotlinc.sh (needs GraalVM with --pgo)
 
 set -euo pipefail
 
@@ -31,27 +34,8 @@ die() { echo "error: $*" >&2; exit 1; }
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
 
-resolve_graal() {
-  if command -v native-image >/dev/null 2>&1; then
-    return 0
-  fi
-  local sdk="${SDKMAN_DIR:-$HOME/.sdkman}/candidates/java"
-  if [[ -x "$sdk/current/bin/native-image" ]]; then
-    export JAVA_HOME="$sdk/current"
-    export PATH="$JAVA_HOME/bin:$PATH"
-    return 0
-  fi
-  # Prefer a graalce candidate if present
-  local d
-  for d in "$sdk"/*graal*; do
-    if [[ -x "$d/bin/native-image" ]]; then
-      export JAVA_HOME="$d"
-      export PATH="$JAVA_HOME/bin:$PATH"
-      return 0
-    fi
-  done
-  die "native-image not found. Install GraalVM CE 21+ (e.g. sdk install java 21.0.2-graalce)"
-}
+# shellcheck disable=SC1091
+source "$ROOT/scripts/resolve-graalvm.sh"
 
 resolve_jdk_for_jmods() {
   if [[ -n "${JDK_HOME:-}" && -f "$JDK_HOME/jmods/java.base.jmod" ]]; then
@@ -62,7 +46,13 @@ resolve_jdk_for_jmods() {
     echo "$JAVA_HOME"
     return
   fi
-  for cand in /usr/lib/jvm/java-21-openjdk-amd64 /usr/lib/jvm/java-21-openjdk /usr/lib/jvm/java-17-openjdk-amd64; do
+  local cand
+  for cand in \
+    /usr/lib/jvm/java-25-openjdk-amd64 \
+    /usr/lib/jvm/java-21-openjdk-amd64 \
+    /usr/lib/jvm/java-21-openjdk \
+    /usr/lib/jvm/java-17-openjdk-amd64
+  do
     if [[ -f "$cand/jmods/java.base.jmod" ]]; then
       echo "$cand"
       return
@@ -75,7 +65,7 @@ main() {
   need_cmd javac
   need_cmd jar
   need_cmd jmod
-  resolve_graal
+  resolve_graalvm || die "native-image not found (see scripts/resolve-graalvm.sh)"
   need_cmd native-image
 
   [[ -d "$LIB_COMPILER" ]] || die "missing $LIB_COMPILER — run ./gradlew :cli:build first"
@@ -103,20 +93,44 @@ main() {
   rm -rf "$WORK_DIR"
   mkdir -p "$WORK_DIR/substitutions/classes" "$WORK_DIR/kotlin-home/lib" "$WORK_DIR/jdk-stub"
 
-  echo "==> compile PathUtil substitution"
+  echo "==> compile PathUtil + Jansi substitutions"
   local svm="$JAVA_HOME/lib/svm/builder/svm.jar"
   local pointsto="$JAVA_HOME/lib/svm/builder/pointsto.jar"
   local nib="$JAVA_HOME/lib/svm/builder/native-image-base.jar"
   [[ -f "$svm" ]] || die "svm.jar not found under $JAVA_HOME (is this GraalVM?)"
   javac --class-path "$svm:$pointsto:$nib" \
     -d "$WORK_DIR/substitutions/classes" \
-    "$ASSETS/substitutions/src/PathUtilSubstitution.java"
+    "$ASSETS/substitutions/src/PathUtilSubstitution.java" \
+    "$ASSETS/substitutions/src/JansiSubstitution.java"
 
   local cp
-  cp=$(printf '%s:' "${jars[@]}")
-  cp="${cp%:}:$WORK_DIR/substitutions/classes"
+  # Slim build CP: embeddable + stdlib + annotations (+ substitution). Drop daemon/build-tools jars.
+  cp="$compiler_jar:$stdlib_jar"
+  for j in "${jars[@]}"; do
+    case "$(basename "$j")" in
+      annotations-*.jar) cp="$cp:$j" ;;
+    esac
+  done
+  cp="$cp:$WORK_DIR/substitutions/classes"
 
   echo "==> native-image K2JVMCompiler (this can take ~1–2 min and several GB RAM)"
+  # Slimmer build CP + optional PGO. Avoid -H:+AddAllCharsets (image bloat).
+  # PGO: PGO_INSTRUMENT=1 → --pgo-instrument; PGO=1 PGO_DATA=file.iprof → --pgo=file
+  # (requires a GraalVM build that lists these flags in `native-image --help`)
+  local extra_ni=()
+  if [[ "${PGO_INSTRUMENT:-0}" == "1" ]]; then
+    if ! native-image --help 2>&1 | grep -qi pgo; then
+      die "PGO_INSTRUMENT=1 requested but this native-image has no PGO support (see scripts/pgo-profile-kotlinc.sh)"
+    fi
+    extra_ni+=("--pgo-instrument")
+  fi
+  if [[ "${PGO:-0}" == "1" ]]; then
+    [[ -n "${PGO_DATA:-}" && -f "${PGO_DATA}" ]] || die "PGO=1 requires PGO_DATA=path/to/default.iprof"
+    if ! native-image --help 2>&1 | grep -qi pgo; then
+      die "PGO=1 requested but this native-image has no PGO support"
+    fi
+    extra_ni+=("--pgo=$PGO_DATA")
+  fi
   native-image \
     -cp "$cp" \
     org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \
@@ -124,28 +138,29 @@ main() {
     --no-fallback \
     -H:+ReportExceptionStackTraces \
     -H:+UnlockExperimentalVMOptions \
-    -H:+AddAllCharsets \
     -H:+AllowIncompleteClasspath \
     --enable-url-protocols=jar,file \
     --exclude-config '.*jline.*' '.*' \
     --exclude-config '.*kotlin-compiler-embeddable.*' 'META-INF/native-image/.*' \
-    -H:ConfigurationFileDirectories="$ASSETS/agent-config"
+    -H:ConfigurationFileDirectories="$ASSETS/agent-config" \
+    "${extra_ni[@]}"
 
-  echo "==> extract java.base.jar from $jdk"
+  echo "==> extract + trim java.base.jar from $jdk"
   jmod extract "$jdk/jmods/java.base.jmod" --dir "$WORK_DIR/jdk-stub/java.base"
-  jar cf "$WORK_DIR/java.base.jar" -C "$WORK_DIR/jdk-stub/java.base/classes" .
+  jar cf "$WORK_DIR/java.base.full.jar" -C "$WORK_DIR/jdk-stub/java.base/classes" .
+  chmod +x "$ROOT/scripts/trim-java-base.sh"
+  "$ROOT/scripts/trim-java-base.sh" "$WORK_DIR/java.base.full.jar" "$WORK_DIR/java.base.jar"
 
-  echo "==> assemble kotlin-home + sidecar"
+  echo "==> assemble kotlin-home + PathUtil sidecar"
+  # Sidecar must be the real embeddable jar (extension point XMLs / resources are loaded from it).
+  # A tiny stub is NOT enough — Kotlin looks up compiler-cli-root.xml via PathUtil.
   cp -f "$compiler_jar" "$WORK_DIR/kotlin-compiler-embeddable.jar"
   cp -f "$stdlib_jar" "$WORK_DIR/kotlin-home/lib/kotlin-stdlib.jar"
-  # Optional companions when present
+  # Optional companions when present (skip second 58MB copy under kotlin-home/lib)
   for j in "${jars[@]}"; do
     case "$(basename "$j")" in
       kotlin-reflect-*.jar) cp -f "$j" "$WORK_DIR/kotlin-home/lib/kotlin-reflect.jar" ;;
       kotlin-script-runtime-*.jar) cp -f "$j" "$WORK_DIR/kotlin-home/lib/" ;;
-      kotlin-compiler-embeddable-*.jar)
-        cp -f "$j" "$WORK_DIR/kotlin-home/lib/kotlin-compiler-embeddable.jar"
-        ;;
     esac
   done
 

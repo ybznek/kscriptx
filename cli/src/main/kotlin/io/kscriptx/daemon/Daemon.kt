@@ -28,8 +28,14 @@ import kotlin.system.exitProcess
  *     O/E → i32 len + bytes; X → i32 exitCode
  */
 object Daemon {
-    private const val IDLE_MS = 30 * 60 * 1000L
+    /** Default idle timeout before the daemon exits (overridable via env). */
+    private val idleMs: Long = run {
+        val raw = System.getenv("KSCRIPTX_DAEMON_IDLE_MINUTES")?.trim()
+        val minutes = raw?.toLongOrNull()?.takeIf { it > 0 } ?: 30L
+        minutes * 60_000L
+    }
     private val running = AtomicBoolean(false)
+    private val lastActivityMs = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
 
     /** Per-process override from `--no-daemon` / `--daemon` CLI flags. Null = env default. */
     @Volatile
@@ -38,6 +44,10 @@ object Daemon {
     fun dir() = (KPaths.home / "daemon").also { it.createDirectories() }
     fun portFile() = dir() / "port"
     fun pidFile() = dir() / "pid"
+
+    fun touchActivity() {
+        lastActivityMs.set(System.currentTimeMillis())
+    }
 
     fun enabled(): Boolean {
         cliOverride?.let { return it }
@@ -80,6 +90,8 @@ object Daemon {
     fun startServer() {
         if (!running.compareAndSet(false, true)) return
         KPaths.ensureRuntimeLayout()
+        // Warm OS page cache for native kotlinc while the daemon accepts requests.
+        io.kscriptx.compile.NativeKotlincCompiler.prewarmAsync()
         dir()
         val server = ServerSocket(0, 50, InetAddress.getLoopbackAddress())
         portFile().writeText(server.localPort.toString())
@@ -91,11 +103,17 @@ object Daemon {
             } catch (_: Exception) {
             }
         })
-        var last = System.currentTimeMillis()
+        lastActivityMs.set(System.currentTimeMillis())
         Thread({
             while (true) {
                 Thread.sleep(5_000)
-                if (System.currentTimeMillis() - last > IDLE_MS) {
+                val idleFor = System.currentTimeMillis() - lastActivityMs.get()
+                if (idleFor > idleMs) {
+                    try {
+                        portFile().deleteIfExists()
+                        pidFile().deleteIfExists()
+                    } catch (_: Exception) {
+                    }
                     exitProcess(0)
                 }
             }
@@ -107,7 +125,7 @@ object Daemon {
             } catch (_: SocketException) {
                 break
             }
-            last = System.currentTimeMillis()
+            // Do not bump activity here — __ping__ must not keep the daemon forever.
             Thread({
                 socket.use { handleClient(it) }
             }, "kscriptx-daemon-worker").start()
@@ -125,6 +143,7 @@ object Daemon {
                 output.flush()
                 return
             }
+            touchActivity()
             val argc = input.readInt()
             val args = Array(argc) { input.readStr() }
             if (cwd.isNotBlank()) {

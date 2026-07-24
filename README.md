@@ -50,7 +50,7 @@ export PATH="$PWD/kscriptx-<ver>/bin:$PATH"
 
 ```bash
 ./gradlew :cli:build
-./scripts/build-native-kotlinc.sh   # GraalVM CE 21+ with native-image
+./scripts/build-native-kotlinc.sh   # newest GraalVM CE (SDKMAN / GRAALVM_HOME)
 ```
 
 Add `bin/` to `PATH`, or run:
@@ -147,8 +147,21 @@ Bundled in Debian packages (`/usr/lib/kscriptx/native-kotlinc`) and Linux releas
 ./scripts/build-native-kotlinc.sh
 ```
 
-Needs **GraalVM CE 21+** with `native-image` (e.g. `sdk install java 21.0.2-graalce`) and a JDK
-with `jmods`. Build takes ~1–2 minutes and several GB RAM.
+Needs the **newest GraalVM CE** with `native-image`. `./scripts/build-native-kotlinc.sh`
+auto-selects the newest SDKMAN install and, by default (`ENSURE_LATEST_GRAAL=1`), installs
+the latest published `*-graalce` if newer. Override with `GRAALVM_HOME=…` or
+`ENSURE_LATEST_GRAAL=0`. Also needs a JDK with `jmods` for the trimmed `java.base.jar`.
+Build takes ~1–2 minutes and several GB RAM.
+
+**Cold compile reality:** a tiny `hello` is ~**200ms of real K2 work** inside `kotlinc-native`
+(fork + compile). Re-entrant `compiler.exec()` in a warm JVM is also ~180–200ms — so a
+persistent kotlinc worker barely helps for small scripts. Bigger levers: content-cache hits
+(~10ms with the CLI daemon), skipping Coursier when jars are already in `~/.m2` /
+`$KSCRIPTX_DIRECTORY/m2` (seeded from Gradle `modules-2`), and a thinner native *image*
+rebuild (jansi no-extract, slimmer build CP; optional PGO via `./scripts/pgo-profile-kotlinc.sh`
+when your GraalVM supports it). `java.base.jar` is auto-trimmed (~15MB → ~10MB) by
+`scripts/trim-java-base.sh`. The PathUtil sidecar must stay the full embeddable jar
+(resources like `compiler-cli-root.xml`).
 
 Lookup order: `KSCRIPTX_NATIVE_KOTLINC` → `~/.kscriptx/native-kotlinc` → install-relative
 `native-kotlinc/` next to `kscriptx.jar` → `/usr/lib/kscriptx/native-kotlinc`.
@@ -172,7 +185,7 @@ Agent metadata and PathUtil substitution: `scripts/native-kotlinc/`.
 | `KSCRIPTX_DIRECTORY` | Override home (default `~/.kscriptx`) |
 | `$home/cache` | Compiled classes by content hash |
 | `$home/deps-cache` | Resolved dependency classpaths |
-| `$home/m2` | Maven mirror seeded from Gradle modules-2 |
+| `$home/m2` | Private Maven mirror; also seeds/writes `~/.m2/repository` for Gradle `mavenLocal()` |
 | `$home/coursier-cache` | Coursier download cache |
 | `$home/url-cache` | Downloaded URL scripts / imports |
 | `$home/idea` | Generated IDEA projects |
@@ -180,7 +193,9 @@ Agent metadata and PathUtil substitution: `scripts/native-kotlinc/`.
 | `KSCRIPTX_NATIVE_KOTLINC` | Override native install dir |
 | `KSCRIPTX_JAVA_OPTS` | Extra JVM flags for the launcher |
 | `KSCRIPTX_DAEMON` | Set `0` to disable the persistent JVM daemon |
+| `KSCRIPTX_DAEMON_IDLE_MINUTES` | Idle timeout before daemon exits (default `30`; `__ping__` does not reset) |
 | `--no-daemon` / `--daemon` | Per-run override (works in shebang: `#!/usr/bin/env -S kscriptx --no-daemon`) |
+| `KSCRIPTX_M2` | Override shared Maven local (default `~/.m2/repository`) |
 | `KSCRIPT_COMMAND_IDEA` | IDEA launcher |
 | `KSCRIPT_COMMAND_GRADLE` | Optional gradle for `--idea` |
 | `$home/cds/` | AppCDS archive (auto-built; speeds warm starts) |

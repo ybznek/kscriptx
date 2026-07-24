@@ -89,10 +89,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up GraalVM CE 21 (native-image)
+      - name: Set up latest GraalVM CE (native-image)
         uses: graalvm/setup-graalvm@v1
         with:
-          java-version: "21"
+          java-version: "latest"
           distribution: "graalvm-community"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 

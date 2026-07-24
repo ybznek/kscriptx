@@ -90,6 +90,7 @@ object ArgParser {
         |
         |Cache home: KSCRIPTX_DIRECTORY (default ~/.kscriptx)
         |Native kotlinc: bundled in .deb / Linux tarball, or ./scripts/build-native-kotlinc.sh
-        |Daemon: auto-started (disable with --no-daemon or KSCRIPTX_DAEMON=0)
+        |Daemon: auto-started; exits after KSCRIPTX_DAEMON_IDLE_MINUTES (default 30).
+        |         Disable with --no-daemon or KSCRIPTX_DAEMON=0
     """.trimMargin()
 }

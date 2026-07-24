@@ -25,6 +25,7 @@ import kotlin.io.path.writeText
 object NativeKotlincCompiler {
     @Volatile private var cachedRoot: Path? = null
     @Volatile private var cachedResolved = false
+    @Volatile private var prewarmStarted = false
 
     val nativeRoot: Path
         get() = resolveRoot()
@@ -66,6 +67,36 @@ object NativeKotlincCompiler {
             (root / "kotlin-compiler-embeddable.jar").exists()
     }
 
+    /**
+     * Best-effort: pull native binary + jars into the OS page cache from the daemon
+     * so the first real compile after idle is less cold.
+     */
+    fun prewarmAsync() {
+        if (prewarmStarted) return
+        prewarmStarted = true
+        val root = resolveRoot() ?: return
+        Thread({
+            try {
+                val files = listOf(
+                    root / "kotlinc-native",
+                    root / "java.base.jar",
+                    root / "kotlin-compiler-embeddable.jar",
+                    root / "kotlin-home" / "lib" / "kotlin-stdlib.jar",
+                )
+                val buf = ByteArray(1024 * 1024)
+                for (f in files) {
+                    if (!f.isRegularFile()) continue
+                    Files.newInputStream(f).use { input ->
+                        while (input.read(buf) >= 0) {
+                            // discard — touch pages only
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }, "kscriptx-native-prewarm").apply { isDaemon = true; start() }
+    }
+
     /** Directory containing kscriptx.jar when running from an install tree. */
     private fun installDirBesideJar(): Path? {
         return try {
@@ -87,6 +118,7 @@ object NativeKotlincCompiler {
         classpath: String,
         outputClassesDir: Path,
         compilerOptions: List<String> = emptyList(),
+        sourceWorkDir: Path? = null,
     ) {
         val root = nativeRoot
         val bin = root / "kotlinc-native"
@@ -97,9 +129,11 @@ object NativeKotlincCompiler {
         if (outputClassesDir.toFile().exists()) outputClassesDir.toFile().deleteRecursively()
         outputClassesDir.createDirectories()
 
-        val work = Files.createTempDirectory("kscriptx-native-")
+        val work = sourceWorkDir ?: Files.createTempDirectory("kscriptx-native-")
+        val deleteWork = sourceWorkDir == null
         try {
             val srcDir = work.resolve("src")
+            if (srcDir.toFile().exists()) srcDir.toFile().deleteRecursively()
             srcDir.createDirectories()
             val sourcePaths = sources.map { unit ->
                 val target = srcDir.resolve(unit.fileName)
@@ -117,6 +151,11 @@ object NativeKotlincCompiler {
                 }
             }
 
+            val opts = LinkedHashSet<String>()
+            // kscriptx wraps .kts → .kt; the scripting plugin is unused overhead.
+            opts.add("-Xdisable-default-scripting-plugin")
+            opts.addAll(compilerOptions)
+
             val cmd = buildList {
                 add(bin.absolutePathString())
                 add("-kotlin-home"); add(kHome.absolutePathString())
@@ -126,7 +165,7 @@ object NativeKotlincCompiler {
                 add("-jvm-target"); add("17")
                 add("-no-stdlib")
                 add("-no-reflect")
-                addAll(compilerOptions)
+                addAll(opts)
                 addAll(sourcePaths)
             }
 
@@ -145,7 +184,9 @@ object NativeKotlincCompiler {
                 error("Native kotlinc failed (exit $code):\n$output")
             }
         } finally {
-            work.toFile().deleteRecursively()
+            if (deleteWork) {
+                work.toFile().deleteRecursively()
+            }
         }
     }
 
@@ -160,9 +201,10 @@ object NativeKotlincCompiler {
         sources: List<SourceUnit>,
     ) {
         val out = KPaths.cache / contentHash
-        val classes = out / "classes"
-        compile(sources, classpath, classes, compilerOptions)
         out.createDirectories()
+        val classes = out / "classes"
+        // Keep sources next to classes (no extra temp dir create/delete on the hot miss path).
+        compile(sources, classpath, classes, compilerOptions, sourceWorkDir = out)
         (out / "classpath").writeText(classpath)
         (out / "entry").writeText(entry)
         (out / "ok").writeText("1")
