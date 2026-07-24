@@ -1,0 +1,17 @@
+.gradle/
+build/
+**/build/
+.idea/
+*.iml
+out/
+dist/
+*.class
+*.log
+.DS_Store
+local.properties
+bin/kscriptx.jar
+bin/lib/
+bin/lib-compiler/
+*.jar
+!cli/src/main/resources/**/*.jar
+!scripts/native-kotlinc/**/*.jar

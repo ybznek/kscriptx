@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+JAR="$DIR/kscriptx.jar"
+LIB="$DIR/lib"
+if [[ ! -f "$JAR" ]]; then
+  echo "kscriptx.jar not found. Build with: ./gradlew :cli:build" >&2
+  exit 1
+fi
+CP="$JAR"
+if [[ -d "$LIB" ]]; then
+  CP="$CP:$LIB/*"
+fi
+exec java -cp "$CP" io.kscriptx.MainKt "$@"
