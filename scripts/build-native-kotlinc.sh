@@ -12,6 +12,12 @@
 #   SKIP_INSTALL=1 ./scripts/build-native-kotlinc.sh   # only build under WORK_DIR
 #   ENSURE_LATEST_GRAAL=0 ./scripts/build-native-kotlinc.sh  # don't sdk-install
 #   GRAALVM_HOME=/path/to/graalvm ./scripts/build-native-kotlinc.sh
+#   NI_GC=serial NI_OPT=2 NATIVE_MARCH=native ./scripts/build-native-kotlinc.sh
+#
+# Native-image defaults (GraalVM 25 CE, tuned for one-shot kotlinc):
+#   NI_GC=epsilon   — no GC (faster for short-lived process; set serial if you OOM)
+#   NI_OPT=3        — -O3 max AOT opts
+#   NATIVE_MARCH=x86-64-v3 on amd64 (AVX2+); use native for local, compatibility for oldest CPUs
 #
 # Workarounds baked in (see README):
 #   - exclude broken jline / embeddable META-INF/native-image configs
@@ -114,10 +120,24 @@ main() {
   cp="$cp:$WORK_DIR/substitutions/classes"
 
   echo "==> native-image K2JVMCompiler (this can take ~1–2 min and several GB RAM)"
-  # Slimmer build CP + optional PGO. Avoid -H:+AddAllCharsets (image bloat).
-  # PGO: PGO_INSTRUMENT=1 → --pgo-instrument; PGO=1 PGO_DATA=file.iprof → --pgo=file
-  # (requires a GraalVM build that lists these flags in `native-image --help`)
+  # GraalVM 25 CE knobs (measured on short-lived alloc-heavy microbench):
+  #   --gc=epsilon  ~30–40% faster alloc vs serial; smaller image; ideal for one-shot kotlinc
+  #   -O3           max AOT optimizations (default is ~O2)
+  #   -march=…      x86-64-v3 for release amd64; override with NATIVE_MARCH=native|compatibility|…
+  # PGO remains Oracle/EE-only (not in GraalVM CE 25 --help).
+  # Builder heap: NATIVE_IMAGE_OPTIONS='-J-Xmx5g' (passed through below).
+  local ni_gc="${NI_GC:-epsilon}"
+  local ni_opt="${NI_OPT:-3}"
+  local ni_march="${NATIVE_MARCH:-}"
+  if [[ -z "$ni_march" ]]; then
+    case "$(uname -m)" in
+      x86_64|amd64) ni_march="x86-64-v3" ;;
+      *) ni_march="compatibility" ;;
+    esac
+  fi
   local extra_ni=()
+  # shellcheck disable=SC2206
+  extra_ni+=( ${NATIVE_IMAGE_OPTIONS:-} )
   if [[ "${PGO_INSTRUMENT:-0}" == "1" ]]; then
     if ! native-image --help 2>&1 | grep -qi pgo; then
       die "PGO_INSTRUMENT=1 requested but this native-image has no PGO support (see scripts/pgo-profile-kotlinc.sh)"
@@ -131,11 +151,13 @@ main() {
     fi
     extra_ni+=("--pgo=$PGO_DATA")
   fi
+  echo "    gc=$ni_gc  -O$ni_opt  -march=$ni_march"
+  # Options before main class (GraalVM 25 is strict about argument order).
   native-image \
-    -cp "$cp" \
-    org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \
-    -o "$WORK_DIR/kotlinc-native" \
     --no-fallback \
+    --gc="$ni_gc" \
+    -O"$ni_opt" \
+    -march="$ni_march" \
     -H:+ReportExceptionStackTraces \
     -H:+UnlockExperimentalVMOptions \
     -H:+AllowIncompleteClasspath \
@@ -143,7 +165,10 @@ main() {
     --exclude-config '.*jline.*' '.*' \
     --exclude-config '.*kotlin-compiler-embeddable.*' 'META-INF/native-image/.*' \
     -H:ConfigurationFileDirectories="$ASSETS/agent-config" \
-    "${extra_ni[@]}"
+    "${extra_ni[@]}" \
+    -cp "$cp" \
+    org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \
+    -o "$WORK_DIR/kotlinc-native"
 
   echo "==> extract + trim java.base.jar from $jdk"
   jmod extract "$jdk/jmods/java.base.jmod" --dir "$WORK_DIR/jdk-stub/java.base"

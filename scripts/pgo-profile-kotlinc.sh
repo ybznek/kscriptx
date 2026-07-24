@@ -26,11 +26,11 @@ if ! native-image --help 2>&1 | grep -qi pgo; then
   cat >&2 <<'EOF'
 PGO flags are not available in this native-image build.
 
-GraalVM CE 21 typically does not ship PGO; use Oracle GraalVM (EE) or a newer
+GraalVM CE 25 typically does not ship PGO; use Oracle GraalVM (EE) or a newer
 GraalVM release that lists --pgo / --pgo-instrument in `native-image --help`.
 
-Without PGO you still get the trimmed java.base stub and jansi substitution
-from ./scripts/build-native-kotlinc.sh.
+For CE, prefer the defaults in build-native-kotlinc.sh instead:
+  --gc=epsilon  -O3  -march=x86-64-v3
 EOF
   exit 2
 fi

@@ -153,6 +153,16 @@ the latest published `*-graalce` if newer. Override with `GRAALVM_HOME=…` or
 `ENSURE_LATEST_GRAAL=0`. Also needs a JDK with `jmods` for the trimmed `java.base.jar`.
 Build takes ~1–2 minutes and several GB RAM.
 
+**GraalVM 25 CE build defaults** (one-shot compiler process):
+
+| Flag | Default | Why |
+|------|---------|-----|
+| `--gc=epsilon` | yes (`NI_GC`) | No GC pauses; ~30–40% faster alloc on short-lived workloads vs serial |
+| `-O3` | yes (`NI_OPT`) | Max AOT optimizations |
+| `-march=x86-64-v3` | amd64 (`NATIVE_MARCH`) | AVX2+ codegen; use `native` locally or `compatibility` for oldest CPUs |
+
+PGO (`--pgo`) is still **not** in GraalVM CE 25 — only Oracle/EE. See `scripts/pgo-profile-kotlinc.sh`.
+
 **Cold compile reality:** a tiny `hello` is ~**200ms of real K2 work** inside `kotlinc-native`
 (fork + compile). Re-entrant `compiler.exec()` in a warm JVM is also ~180–200ms — so a
 persistent kotlinc worker barely helps for small scripts. Bigger levers: content-cache hits
