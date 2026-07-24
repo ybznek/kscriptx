@@ -9,9 +9,6 @@ OUT="${1:-$ROOT/build/reports/perf}"
 KS="${KSCRIPTX:-$ROOT/bin/kscriptx}"
 mkdir -p "$OUT"
 
-need() { command -v "$1" >/dev/null 2>&1 || { echo "missing: $1" >&2; exit 1; }; }
-need python3
-
 if [[ ! -x "$KS" ]]; then
   echo "kscriptx not found at $KS — build with: ./gradlew :cli:build" >&2
   exit 1
@@ -21,25 +18,28 @@ fi
 NATIVE_ROOT="${KSCRIPTX_NATIVE_KOTLINC:-$HOME/.kscriptx/native-kotlinc}"
 export KSCRIPTX_NATIVE_KOTLINC="$NATIVE_ROOT"
 
+# Milliseconds as float; fails if command fails. No Python.
 ms_run() {
-  # prints milliseconds as float on stdout; fails if command fails
-  python3 - "$@" <<'PY'
-import subprocess, sys, time
-cmd = sys.argv[1:]
-t0 = time.perf_counter()
-r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-dt = (time.perf_counter() - t0) * 1000.0
-if r.returncode != 0:
-    sys.stderr.write(r.stdout)
-    sys.stderr.write(f"\n[bench] command failed ({r.returncode}): {' '.join(cmd)}\n")
-    sys.exit(r.returncode)
-print(f"{dt:.2f}")
-PY
+  local start end out rc
+  start="$(date +%s%N)"
+  set +e
+  out="$("$@" 2>&1)"
+  rc=$?
+  set -e
+  end="$(date +%s%N)"
+  if [[ "$rc" -ne 0 ]]; then
+    printf '%s\n' "$out" >&2
+    echo "[bench] command failed ($rc): $*" >&2
+    return "$rc"
+  fi
+  awk -v s="$start" -v e="$end" 'BEGIN { printf "%.2f", (e - s) / 1000000 }'
 }
 
 HOME_TMP="$(mktemp -d "${TMPDIR:-/tmp}/kscriptx-bench.XXXXXX")"
 trap 'rm -rf "$HOME_TMP"' EXIT
 export KSCRIPTX_DIRECTORY="$HOME_TMP"
+# Bench warm path without daemon noise unless explicitly enabled.
+export KSCRIPTX_DAEMON="${KSCRIPTX_DAEMON:-0}"
 
 VERSION_MS="$(ms_run "$KS" --version)"
 HELP_MS="$(ms_run "$KS" --help)"
@@ -85,22 +85,26 @@ JSON="$OUT/cli-bench.json"
   echo
 } | tee "$MD"
 
-python3 - "$JSON" "$VERSION_MS" "$HELP_MS" "$COLD_MS" "$WARM_MS" "$NATIVE" <<'PY'
-import json, sys
-path, ver, help_, cold, warm, native = sys.argv[1:]
-def f(x):
-    try: return float(x) if x else None
-    except: return None
-data = {
-  "version_ms": f(ver),
-  "help_ms": f(help_),
-  "cold_hello_ms": f(cold),
-  "warm_hello_ms": f(warm),
-  "native_kotlinc": native == "yes",
+json_num() {
+  if [[ -n "${1:-}" ]]; then
+    printf '%s' "$1"
+  else
+    printf 'null'
+  fi
 }
-with open(path, "w") as fh:
-    json.dump(data, fh, indent=2)
-    fh.write("\n")
-PY
+
+{
+  printf '{\n'
+  printf '  "version_ms": %s,\n' "$(json_num "$VERSION_MS")"
+  printf '  "help_ms": %s,\n' "$(json_num "$HELP_MS")"
+  printf '  "cold_hello_ms": %s,\n' "$(json_num "$COLD_MS")"
+  printf '  "warm_hello_ms": %s,\n' "$(json_num "$WARM_MS")"
+  if [[ "$NATIVE" == "yes" ]]; then
+    printf '  "native_kotlinc": true\n'
+  else
+    printf '  "native_kotlinc": false\n'
+  fi
+  printf '}\n'
+} >"$JSON"
 
 echo "Wrote $MD and $JSON"

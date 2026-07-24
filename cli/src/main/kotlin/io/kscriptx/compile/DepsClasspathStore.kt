@@ -27,7 +27,11 @@ object DepsClasspathStore {
         val cp = KPaths.depsCache / depsHash / "classpath"
         if (!cp.exists()) return null
         val text = cp.readText().trim()
-        return text.ifEmpty { null }
+        if (text.isEmpty()) return null
+        // Reject stale entries whose jars were deleted.
+        val sep = java.io.File.pathSeparator
+        if (text.split(sep).any { it.isNotBlank() && !java.io.File(it).isFile }) return null
+        return text
     }
 
     fun save(depsHash: String, classpath: String) {

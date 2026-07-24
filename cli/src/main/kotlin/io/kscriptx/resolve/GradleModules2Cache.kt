@@ -1,6 +1,5 @@
 package io.kscriptx.resolve
 
-import io.kscriptx.KPaths
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -30,12 +29,18 @@ object GradleModules2Cache {
         val dir = modules2 / gav.group / gav.name / gav.version
         if (!dir.exists() || !dir.isDirectory()) return null
         val expected = "${gav.name}-${gav.version}.$extension"
+        // Gradle layout: <version>/<content-hash>/<file> — one level of hash dirs, no deep walk.
         return try {
-            Files.walk(dir).use { stream ->
-                stream.filter { it.isRegularFile() && it.fileName.toString() == expected }
-                    .findFirst()
-                    .orElse(null)
+            for (hashDir in dir.listDirectoryEntries()) {
+                if (!hashDir.isDirectory()) continue
+                val candidate = hashDir / expected
+                if (candidate.isRegularFile()) return candidate
+                // Rare: nested; check one more level without full tree walk.
+                for (nested in hashDir.listDirectoryEntries()) {
+                    if (nested.isRegularFile() && nested.fileName.toString() == expected) return nested
+                }
             }
+            null
         } catch (_: Exception) {
             null
         }
@@ -45,13 +50,12 @@ object GradleModules2Cache {
     fun seedIntoMavenLocal(localM2: Path, gav: Gav) {
         localM2.createDirectories()
         for (ext in listOf("pom", "jar")) {
-            val src = find(gav, ext) ?: continue
             val destDir = localM2 / gav.group.replace('.', '/') / gav.name / gav.version
-            destDir.createDirectories()
             val dest = destDir / "${gav.name}-${gav.version}.$ext"
-            if (!dest.exists()) {
-                Files.copy(src, dest, StandardCopyOption.REPLACE_EXISTING)
-            }
+            if (dest.exists()) continue
+            val src = find(gav, ext) ?: continue
+            destDir.createDirectories()
+            Files.copy(src, dest, StandardCopyOption.REPLACE_EXISTING)
         }
     }
 }

@@ -34,6 +34,8 @@ object CacheStore {
     fun clear() {
         if (KPaths.cache.exists()) KPaths.cache.toFile().deleteRecursively()
         if (KPaths.urlCache.exists()) KPaths.urlCache.toFile().deleteRecursively()
+        val fast = KPaths.home / "fast-cache"
+        if (fast.exists()) fast.toFile().deleteRecursively()
         DepsClasspathStore.clear()
         val staleDaemon = KPaths.home / "daemon"
         if (staleDaemon.exists()) staleDaemon.toFile().deleteRecursively()

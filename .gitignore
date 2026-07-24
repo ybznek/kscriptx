@@ -11,7 +11,11 @@ dist/
 local.properties
 bin/kscriptx.jar
 bin/lib/
+bin/lib-resolve/
 bin/lib-compiler/
+bin/kscriptx-dclient
+bin/kscriptx-coverage
+native/target/
 *.jar
 !gradle/wrapper/gradle-wrapper.jar
 !cli/src/main/resources/**/*.jar

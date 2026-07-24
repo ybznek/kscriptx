@@ -127,7 +127,15 @@ CLI  →  parse annotations / resolve imports
 ```
 
 Typical timings (this machine): **~0.2–0.4s** cold compile with native kotlinc;
-**~0.09–0.12s** cache hit after AppCDS warms (first hit builds `~/.kscriptx/cds/`).
+**~0.05–0.12s** cache hit (lower with the background daemon after the first run).
+
+Disable the daemon for a single script (including shebang):
+
+```bash
+#!/usr/bin/env -S kscriptx --no-daemon
+```
+
+Or `KSCRIPTX_DAEMON=0`. The launcher talks to the daemon via a small Rust helper (`bin/kscriptx-dclient`), built automatically when `cargo` is on `PATH`.
 
 ## Native kotlinc
 
@@ -171,9 +179,14 @@ Agent metadata and PathUtil substitution: `scripts/native-kotlinc/`.
 | `$home/native-kotlinc` | Native kotlinc install |
 | `KSCRIPTX_NATIVE_KOTLINC` | Override native install dir |
 | `KSCRIPTX_JAVA_OPTS` | Extra JVM flags for the launcher |
+| `KSCRIPTX_DAEMON` | Set `0` to disable the persistent JVM daemon |
+| `--no-daemon` / `--daemon` | Per-run override (works in shebang: `#!/usr/bin/env -S kscriptx --no-daemon`) |
 | `KSCRIPT_COMMAND_IDEA` | IDEA launcher |
 | `KSCRIPT_COMMAND_GRADLE` | Optional gradle for `--idea` |
 | `$home/cds/` | AppCDS archive (auto-built; speeds warm starts) |
+| `$home/daemon/` | Persistent CLI daemon socket/port |
+| `$home/fast-cache/` | mtime-based script fingerprint → content hash |
+| `bin/kscriptx-dclient` | Rust loopback client used by the launcher (built with `cargo`) |
 
 Optional config file (`kscript.properties`): `scripting.preamble`, `scripting.kotlin.opts`,
 `scripting.repository.url`, etc.

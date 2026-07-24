@@ -85,6 +85,8 @@ if [[ ! -x "$DEB_ROOT/usr/lib/kscriptx/native-kotlinc/kotlinc-native" ]]; then
 fi
 chmod +x "$DEB_ROOT/usr/lib/kscriptx/native-kotlinc/kotlinc-native"
 chmod +x "$DEB_ROOT/usr/lib/kscriptx/kscriptx"
+[[ -x "$DEB_ROOT/usr/lib/kscriptx/kscriptx-dclient" ]] && chmod +x "$DEB_ROOT/usr/lib/kscriptx/kscriptx-dclient"
+[[ -x "$DEB_ROOT/usr/lib/kscriptx/kscriptx-coverage" ]] && chmod +x "$DEB_ROOT/usr/lib/kscriptx/kscriptx-coverage"
 
 install -m 0755 /dev/stdin "$DEB_ROOT/usr/bin/kscriptx" <<'EOF'
 #!/usr/bin/env bash

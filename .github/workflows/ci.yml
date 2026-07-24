@@ -26,6 +26,14 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
@@ -57,23 +65,25 @@ jobs:
             echo
             echo "### Tests"
             if [[ -d cli/build/test-results/test ]]; then
-              python3 - <<'PY'
-          import pathlib, xml.etree.ElementTree as ET
-          total = fails = errors = skipped = 0
-          for p in pathlib.Path("cli/build/test-results/test").glob("TEST-*.xml"):
-              root = ET.parse(p).getroot()
-              total += int(root.get("tests", 0))
-              fails += int(root.get("failures", 0))
-              errors += int(root.get("errors", 0))
-              skipped += int(root.get("skipped", 0))
-          print(f"| Result | Count |")
-          print(f"|---|---:|")
-          print(f"| Total | {total} |")
-          print(f"| Failures | {fails} |")
-          print(f"| Errors | {errors} |")
-          print(f"| Skipped | {skipped} |")
-          print()
-          PY
+              echo "| Result | Count |"
+              echo "|---|---:|"
+              total=0; fails=0; errors=0; skipped=0
+              for p in cli/build/test-results/test/TEST-*.xml; do
+                [[ -f "$p" ]] || continue
+                t=$(grep -oP 'tests="\K[0-9]+' "$p" | head -1 || echo 0)
+                f=$(grep -oP 'failures="\K[0-9]+' "$p" | head -1 || echo 0)
+                e=$(grep -oP 'errors="\K[0-9]+' "$p" | head -1 || echo 0)
+                s=$(grep -oP 'skipped="\K[0-9]+' "$p" | head -1 || echo 0)
+                total=$((total + t))
+                fails=$((fails + f))
+                errors=$((errors + e))
+                skipped=$((skipped + s))
+              done
+              echo "| Total | $total |"
+              echo "| Failures | $fails |"
+              echo "| Errors | $errors |"
+              echo "| Skipped | $skipped |"
+              echo
             else
               echo "_No JUnit XML found._"
               echo

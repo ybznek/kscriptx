@@ -23,6 +23,9 @@ import kotlin.io.path.writeText
  * 4. `/usr/lib/kscriptx/native-kotlinc` (Debian package)
  */
 object NativeKotlincCompiler {
+    @Volatile private var cachedRoot: Path? = null
+    @Volatile private var cachedResolved = false
+
     val nativeRoot: Path
         get() = resolveRoot()
             ?: error(
@@ -32,14 +35,17 @@ object NativeKotlincCompiler {
                     "./scripts/build-native-kotlinc.sh (or set KSCRIPTX_NATIVE_KOTLINC)."
             )
 
-    private val binary get() = nativeRoot / "kotlinc-native"
-    private val kotlinHome get() = nativeRoot / "kotlin-home"
-    private val javaBaseJar get() = nativeRoot / "java.base.jar"
-    private val compilerJar get() = nativeRoot / "kotlin-compiler-embeddable.jar"
-
     fun isAvailable(): Boolean = resolveRoot() != null
 
-    fun resolveRoot(): Path? = candidateRoots().firstOrNull { isValidInstall(it) }
+    fun resolveRoot(): Path? {
+        if (cachedResolved) return cachedRoot
+        synchronized(this) {
+            if (cachedResolved) return cachedRoot
+            cachedRoot = candidateRoots().firstOrNull { isValidInstall(it) }
+            cachedResolved = true
+            return cachedRoot
+        }
+    }
 
     fun candidateRoots(): List<Path> {
         val out = linkedSetOf<Path>()

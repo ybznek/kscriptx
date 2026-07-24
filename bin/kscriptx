@@ -3,6 +3,7 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JAR="$DIR/kscriptx.jar"
 LIB="$DIR/lib"
+DCLIENT="$DIR/kscriptx-dclient"
 if [[ ! -f "$JAR" ]]; then
   echo "kscriptx.jar not found. Build with: ./gradlew :cli:build" >&2
   exit 1
@@ -10,6 +11,50 @@ fi
 CP="$JAR"
 if [[ -d "$LIB" ]]; then
   CP="$CP:$LIB/*"
+fi
+
+KS_HOME="${KSCRIPTX_DIRECTORY:-${KSCRIPT_DIRECTORY:-$HOME/.kscriptx}}"
+DAEMON_PORT_FILE="$KS_HOME/daemon/port"
+
+# --no-daemon / --daemon in argv (incl. shebang via env -S) override env.
+daemon_cli_override=""
+for a in "$@"; do
+  case "$a" in
+    --no-daemon) daemon_cli_override=0 ;;
+    --daemon) daemon_cli_override=1 ;;
+  esac
+done
+
+daemon_enabled() {
+  if [[ -n "$daemon_cli_override" ]]; then
+    [[ "$daemon_cli_override" == "1" ]]
+    return
+  fi
+  case "${KSCRIPTX_DAEMON:-1}" in
+    0|false|FALSE|off|OFF|no|NO) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# Fast path: native loopback client (no Python).
+# Skip for daemon-server bootstrap (`kscriptx --daemon` / `--daemon-server`).
+server_bootstrap=0
+if [[ $# -eq 1 && ( "$1" == "--daemon" || "$1" == "--daemon-server" ) ]]; then
+  server_bootstrap=1
+fi
+
+if [[ "$server_bootstrap" -eq 0 ]] && daemon_enabled && [[ -x "$DCLIENT" && -f "$DAEMON_PORT_FILE" ]]; then
+  PORT="$(tr -d '[:space:]' <"$DAEMON_PORT_FILE" || true)"
+  if [[ "$PORT" =~ ^[0-9]+$ ]]; then
+    set +e
+    "$DCLIENT" "$PORT" "$@"
+    status=$?
+    set -e
+    # 99 = daemon not reachable — fall through to JVM
+    if [[ "$status" -ne 99 ]]; then
+      exit "$status"
+    fi
+  fi
 fi
 
 # Short-lived CLI: C1 only + SerialGC starts faster than default tiered/G1.
@@ -20,12 +65,10 @@ JAVA_OPTS=(
 )
 
 # AppCDS: reuse a shared class archive under ~/.kscriptx/cds (big warm-start win).
-KS_HOME="${KSCRIPTX_DIRECTORY:-${KSCRIPT_DIRECTORY:-$HOME/.kscriptx}}"
 CDS_DIR="$KS_HOME/cds"
 CDS_FILE="$CDS_DIR/classes.jsa"
 CDS_STAMP="$CDS_DIR/classpath.stamp"
 stamp_classpath() {
-  # Fast invalidate key: size+mtime of launcher jars (no hashing).
   local s
   s="$(stat -c '%s.%Y' "$JAR" 2>/dev/null || stat -f '%z.%m' "$JAR" 2>/dev/null || echo x)"
   if [[ -d "$LIB" ]]; then
@@ -42,12 +85,10 @@ if [[ -f "$CDS_FILE" && -f "$CDS_STAMP" && "$(cat "$CDS_STAMP" 2>/dev/null || tr
   JAVA_OPTS+=(-XX:SharedArchiveFile="$CDS_FILE")
 else
   mkdir -p "$CDS_DIR"
-  # Create/refresh archive on exit for the next invocation.
   JAVA_OPTS+=(-XX:ArchiveClassesAtExit="$CDS_FILE")
   printf '%s' "$STAMP" >"$CDS_STAMP"
 fi
 
-# Allow users to append flags via JAVA_OPTS / KSCRIPTX_JAVA_OPTS.
 # shellcheck disable=SC2206
 EXTRA=( ${KSCRIPTX_JAVA_OPTS:-} ${JAVA_OPTS_EXTRA:-} )
 exec java "${JAVA_OPTS[@]}" "${EXTRA[@]}" -cp "$CP" io.kscriptx.MainKt "$@"

@@ -46,4 +46,19 @@ class ArgParserTest {
     fun helpTextMentionsNative() {
         assertTrue(ArgParser.helpText().contains("native kotlinc"))
     }
+
+    @Test
+    fun noDaemonFlagIsStripped() {
+        ArgParser.applyDaemonFlags(arrayOf("--no-daemon", "hello.kts"))
+        assertEquals(false, io.kscriptx.daemon.Daemon.cliOverride)
+        val r = ArgParser.parse(ArgParser.applyDaemonFlags(arrayOf("--no-daemon", "hello.kts")))
+        assertEquals(RunMode.RUN, r.mode)
+        assertEquals("hello.kts", r.scriptSource)
+    }
+
+    @Test
+    fun daemonFlagForcesEnable() {
+        ArgParser.applyDaemonFlags(arrayOf("--daemon", "hello.kts"))
+        assertEquals(true, io.kscriptx.daemon.Daemon.cliOverride)
+    }
 }

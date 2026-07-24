@@ -5,18 +5,19 @@ plugins {
 }
 
 group = "io.kscriptx"
-version = "0.1.2"
+version = "0.1.3"
 
 repositories {
     mavenCentral()
 }
 
 val compilerClasspath = configurations.create("compilerClasspath")
+val resolveClasspath = configurations.create("resolveClasspath")
 
 dependencies {
     implementation(kotlin("stdlib"))
-    // Maven resolve without Gradle (prefers ~/.gradle/caches/modules-2 when present).
-    implementation("io.get-coursier:interface:1.0.28")
+    // Coursier only on resolve classpath — loaded lazily on dependency cache miss.
+    resolveClasspath("io.get-coursier:interface:1.0.28")
     // Input jars for scripts/build-native-kotlinc.sh (not on the CLI runtime classpath).
     compilerClasspath("org.jetbrains.kotlin:kotlin-compiler-embeddable:2.4.10")
     testImplementation(kotlin("test"))
@@ -71,6 +72,23 @@ tasks.jar {
     }
 }
 
+val nativeProjectDir = rootProject.layout.projectDirectory.dir("native")
+
+tasks.register<Exec>("compileNativeHelpers") {
+    group = "build"
+    description = "Build Rust helpers (kscriptx-dclient, kscriptx-coverage) into bin/"
+    commandLine("bash", rootProject.file("scripts/build-native-helpers.sh").absolutePath)
+    inputs.files(
+        nativeProjectDir.file("Cargo.toml"),
+        nativeProjectDir.dir("src").asFileTree,
+        rootProject.file("scripts/build-native-helpers.sh"),
+    )
+    outputs.files(
+        rootProject.layout.projectDirectory.file("bin/kscriptx-dclient"),
+        rootProject.layout.projectDirectory.file("bin/kscriptx-coverage"),
+    )
+}
+
 tasks.register<Sync>("installDistLocal") {
     dependsOn(tasks.jar)
     into(rootProject.layout.projectDirectory.dir("bin"))
@@ -80,6 +98,9 @@ tasks.register<Sync>("installDistLocal") {
     into("lib") {
         from(configurations.runtimeClasspath)
     }
+    into("lib-resolve") {
+        from(resolveClasspath)
+    }
     into("lib-compiler") {
         from(compilerClasspath)
     }
@@ -87,9 +108,16 @@ tasks.register<Sync>("installDistLocal") {
         include("kscriptx")
         include("kscriptx.bat")
         include("kscriptx.ps1")
+        include("kscriptx-dclient")
+        include("kscriptx-coverage")
     }
 }
 
 tasks.build {
-    finalizedBy("installDistLocal")
+    finalizedBy("compileNativeHelpers", "installDistLocal")
+}
+
+tasks.named("installDistLocal") {
+    // Ensure jars land before/with native bins; native install is independent of Sync.
+    finalizedBy("compileNativeHelpers")
 }
