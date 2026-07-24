@@ -31,11 +31,8 @@ object AnnotationParser {
                 continue
             }
             inHeader = false
-            remaining += lines.drop(i)
+            remaining.addAll(lines.subList(i, lines.size))
             break
-        }
-        if (i >= lines.size && remaining.isEmpty()) {
-            // all annotations / empty
         }
         return config to remaining.joinToString("\n")
     }

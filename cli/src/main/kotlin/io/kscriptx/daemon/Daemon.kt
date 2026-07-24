@@ -1,6 +1,7 @@
 package io.kscriptx.daemon
 
 import io.kscriptx.KPaths
+import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.net.InetAddress
@@ -45,6 +46,15 @@ object Daemon {
     }
 
     fun isAlive(): Boolean {
+        // Prefer pid check (no TCP round-trip) when the pid file is present.
+        try {
+            if (pidFile().exists()) {
+                val pid = pidFile().readText().trim().toLong()
+                val alive = ProcessHandle.of(pid).map { it.isAlive }.orElse(false)
+                if (alive && readPort() != null) return true
+            }
+        } catch (_: Exception) {
+        }
         val port = readPort() ?: return false
         return try {
             Socket(InetAddress.getLoopbackAddress(), port).use { sock ->
@@ -188,7 +198,9 @@ object Daemon {
 
     /** Start a background daemon for subsequent invocations (best-effort). */
     fun spawnBackgroundIfNeeded() {
-        if (!enabled() || isAlive()) return
+        if (!enabled()) return
+        // Cheap: if port+pid look alive, skip. Avoid TCP ping on every CLI exit.
+        if (isAlive()) return
         try {
             val cp = System.getProperty("java.class.path") ?: return
             val javaHome = System.getProperty("java.home")
@@ -230,22 +242,42 @@ private fun DataInputStream.readStr(): String {
     return String(bytes, StandardCharsets.UTF_8)
 }
 
+/** Buffers frames to cut syscall/flush overhead on chatty scripts. */
 private class FramingPrintStream(
     private val sink: DataOutputStream,
     private val frameType: Int,
-) : java.io.PrintStream(java.io.ByteArrayOutputStream(), true, StandardCharsets.UTF_8) {
+) : java.io.PrintStream(java.io.ByteArrayOutputStream(), false, StandardCharsets.UTF_8) {
     private val lock = Any()
-    override fun write(buf: ByteArray, off: Int, len: Int) {
+    private val buf = ByteArrayOutputStream(4096)
+
+    override fun write(b: ByteArray, off: Int, len: Int) {
         if (len <= 0) return
         synchronized(lock) {
-            sink.writeByte(frameType)
-            sink.writeInt(len)
-            sink.write(buf, off, len)
-            sink.flush()
+            buf.write(b, off, len)
+            if (buf.size() >= 4096) flushBuffer()
         }
     }
 
     override fun write(b: Int) {
-        write(byteArrayOf(b.toByte()), 0, 1)
+        synchronized(lock) {
+            buf.write(b)
+            if (buf.size() >= 4096) flushBuffer()
+        }
+    }
+
+    override fun flush() {
+        synchronized(lock) {
+            flushBuffer()
+            sink.flush()
+        }
+    }
+
+    private fun flushBuffer() {
+        if (buf.size() == 0) return
+        val data = buf.toByteArray()
+        buf.reset()
+        sink.writeByte(frameType)
+        sink.writeInt(data.size)
+        sink.write(data)
     }
 }

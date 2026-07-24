@@ -28,9 +28,15 @@ object DepsClasspathStore {
         if (!cp.exists()) return null
         val text = cp.readText().trim()
         if (text.isEmpty()) return null
-        // Reject stale entries whose jars were deleted.
+        // Reject stale entries: spot-check jars (full scan is O(n) stat on large CPs).
         val sep = java.io.File.pathSeparator
-        if (text.split(sep).any { it.isNotBlank() && !java.io.File(it).isFile }) return null
+        val parts = text.split(sep).filter { it.isNotBlank() }
+        if (parts.isEmpty()) return null
+        val sample = when {
+            parts.size <= 4 -> parts
+            else -> listOf(parts.first(), parts[parts.size / 2], parts.last())
+        }
+        if (sample.any { !java.io.File(it).isFile }) return null
         return text
     }
 

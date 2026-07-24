@@ -2,36 +2,57 @@ package io.kscriptx.compile
 
 import io.kscriptx.KPaths
 import io.kscriptx.config.UserConfig
+import io.kscriptx.model.CompiledScript
 import io.kscriptx.util.Hasher
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.attribute.BasicFileAttributes
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.io.path.createDirectories
 import kotlin.io.path.div
 import kotlin.io.path.exists
-import kotlin.io.path.getLastModifiedTime
 import kotlin.io.path.isRegularFile
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
 
 /**
  * Skip full parse/hash when file mtimes/sizes still match a previous successful run.
+ * In-daemon, an in-memory hot entry avoids re-reading meta + CacheStore on every hit.
  */
 object FastCache {
     private val importRe = Regex("""@file\s*:\s*Import\s*\(\s*"([^"]+)"\s*\)""")
 
-    data class Probe(
-        val contentHash: String,
-        val kotlinOptions: List<String>,
+    private data class FileStamp(val path: Path, val size: Long, val mtime: Long)
+    private data class HotEntry(
+        val textMode: Boolean,
+        val configStamp: String,
+        val files: List<FileStamp>,
+        val compiled: CompiledScript,
     )
 
+    private val hot = ConcurrentHashMap<String, HotEntry>()
+
+    /**
+     * Returns a ready [CompiledScript] on hit (single [CacheStore.load] on first hit,
+     * then in-process reuse while mtimes match).
+     */
     fun probeFileScript(
         scriptPath: Path,
         textMode: Boolean,
-        userConfig: UserConfig,
-    ): Probe? {
+    ): CompiledScript? {
         if (!scriptPath.isRegularFile()) return null
         val abs = scriptPath.toAbsolutePath().normalize()
-        val meta = KPaths.home / "fast-cache" / Hasher.md5(abs.toString())
+        val key = abs.toString()
+        val cfg = configStamp()
+
+        hot[key]?.let { entry ->
+            if (entry.textMode == textMode && entry.configStamp == cfg && filesMatch(entry.files)) {
+                return entry.compiled
+            }
+            hot.remove(key)
+        }
+
+        val meta = KPaths.home / "fast-cache" / Hasher.md5(key)
         if (!meta.exists()) return null
         return try {
             val lines = meta.readText().lineSequence().filter { it.isNotBlank() }.toList()
@@ -46,23 +67,26 @@ object FastCache {
             val contentHash = lines[0]
             val kotlinOptions = lines[1].split('\u0001').filter { it.isNotBlank() }
             val savedTextMode = lines[2].toBooleanStrict()
-            val configStamp = lines[3]
+            val savedCfg = lines[3]
             if (savedTextMode != textMode) return null
-            if (configStamp != configStampOf(userConfig)) return null
+            if (savedCfg != cfg) return null
             val n = lines[4].toInt()
             if (lines.size < 5 + n) return null
+            val files = ArrayList<FileStamp>(n)
             for (i in 0 until n) {
                 val parts = lines[5 + i].split('|', limit = 3)
                 if (parts.size != 3) return null
                 val p = Path.of(parts[0])
                 val size = parts[1].toLong()
                 val mtime = parts[2].toLong()
-                if (!p.isRegularFile()) return null
-                if (Files.size(p) != size) return null
-                if (p.getLastModifiedTime().toMillis() != mtime) return null
+                val attrs = attrsOrNull(p) ?: return null
+                if (attrs.size() != size) return null
+                if (attrs.lastModifiedTime().toMillis() != mtime) return null
+                files.add(FileStamp(p, size, mtime))
             }
-            if (CacheStore.load(contentHash, kotlinOptions) == null) return null
-            Probe(contentHash, kotlinOptions)
+            val compiled = CacheStore.load(contentHash, kotlinOptions) ?: return null
+            hot[key] = HotEntry(textMode, cfg, files, compiled)
+            compiled
         } catch (_: Exception) {
             null
         }
@@ -71,7 +95,7 @@ object FastCache {
     fun remember(
         scriptPath: Path,
         textMode: Boolean,
-        userConfig: UserConfig,
+        @Suppress("UNUSED_PARAMETER") userConfig: UserConfig,
         contentHash: String,
         kotlinOptions: List<String>,
         importOrigins: List<Path>,
@@ -97,33 +121,58 @@ object FastCache {
         val dir = KPaths.home / "fast-cache"
         dir.createDirectories()
         val meta = dir / Hasher.md5(abs.toString())
+        val cfg = configStamp()
+        val stamps = ArrayList<FileStamp>(files.size)
         val body = buildString {
             appendLine(contentHash)
             appendLine(kotlinOptions.joinToString("\u0001"))
             appendLine(textMode)
-            appendLine(configStampOf(userConfig))
+            appendLine(cfg)
             appendLine(files.size)
             for (f in files) {
+                val attrs = Files.readAttributes(f, BasicFileAttributes::class.java)
+                val size = attrs.size()
+                val mtime = attrs.lastModifiedTime().toMillis()
+                stamps.add(FileStamp(f, size, mtime))
                 append(f)
                 append('|')
-                append(Files.size(f))
+                append(size)
                 append('|')
-                append(f.getLastModifiedTime().toMillis())
+                append(mtime)
                 append('\n')
             }
         }
         meta.writeText(body)
+        CacheStore.load(contentHash, kotlinOptions)?.let { compiled ->
+            hot[abs.toString()] = HotEntry(textMode, cfg, stamps, compiled)
+        }
     }
 
-    private fun configStampOf(cfg: UserConfig): String = Hasher.md5(
-        buildString {
-            append(cfg.preamble)
-            append('\n')
-            append(cfg.kotlinOpts.joinToString(" "))
-            append('\n')
-            append(cfg.repositoryUrl.orEmpty())
-            append(cfg.repositoryUser.orEmpty())
-            append(cfg.repositoryPassword.orEmpty())
+    /** Cheap stamp: missing config → "-", else size+mtime (avoids reading/parsing properties). */
+    fun configStamp(): String {
+        val path = KPaths.configFile
+        if (!path.exists()) return "-"
+        return try {
+            val attrs = Files.readAttributes(path, BasicFileAttributes::class.java)
+            "${attrs.size()}:${attrs.lastModifiedTime().toMillis()}"
+        } catch (_: Exception) {
+            "-"
         }
-    )
+    }
+
+    private fun filesMatch(files: List<FileStamp>): Boolean {
+        for (f in files) {
+            val attrs = attrsOrNull(f.path) ?: return false
+            if (attrs.size() != f.size) return false
+            if (attrs.lastModifiedTime().toMillis() != f.mtime) return false
+        }
+        return true
+    }
+
+    private fun attrsOrNull(p: Path): BasicFileAttributes? = try {
+        if (!p.isRegularFile()) null
+        else Files.readAttributes(p, BasicFileAttributes::class.java)
+    } catch (_: Exception) {
+        null
+    }
 }

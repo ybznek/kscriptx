@@ -80,20 +80,18 @@ fun runMain(args: Array<String>, fromDaemon: Boolean): Int {
         return 0
     }
 
-    KPaths.ensureRuntimeLayout()
-    val userConfig = UserConfig.load()
-
-    // Fast path: unchanged file scripts skip parse/hash entirely.
+    // Fast path: unchanged file scripts skip parse/hash/config/mkdirs entirely.
     if (request.mode == RunMode.RUN && !request.textMode) {
         val asFile = Path(scriptSource)
         if (asFile.isRegularFile()) {
-            FastCache.probeFileScript(asFile, textMode = false, userConfig)?.let { probe ->
-                CacheStore.load(probe.contentHash, probe.kotlinOptions)?.let { compiled ->
-                    return ScriptRunner.run(compiled, request.scriptArgs, workingDir = null)
-                }
+            FastCache.probeFileScript(asFile, textMode = false)?.let { compiled ->
+                return ScriptRunner.run(compiled, request.scriptArgs, workingDir = null)
             }
         }
     }
+
+    KPaths.ensureRuntimeLayout()
+    val userConfig = UserConfig.load()
 
     val resolved = ScriptResolver.resolve(
         source = scriptSource,

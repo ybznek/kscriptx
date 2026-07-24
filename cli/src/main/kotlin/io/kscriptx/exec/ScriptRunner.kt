@@ -2,12 +2,25 @@ package io.kscriptx.exec
 
 import io.kscriptx.model.CompiledScript
 import java.io.File
+import java.lang.ref.SoftReference
+import java.lang.reflect.Method
+import java.net.URL
 import java.net.URLClassLoader
 import java.nio.file.Path
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.io.path.absolutePathString
 import kotlin.system.exitProcess
 
 object ScriptRunner {
+    private data class CachedEntry(
+        val urls: Array<URL>,
+        val loader: URLClassLoader,
+        val main: Method,
+    )
+
+    /** Reused across daemon requests (avoids reopening dependency jars every run). */
+    private val loaderCache = ConcurrentHashMap<String, SoftReference<CachedEntry>>()
+
     fun run(compiled: CompiledScript, scriptArgs: List<String>, workingDir: Path? = null): Int {
         val needsSeparateJvm = compiled.kotlinOptions.any {
             it.startsWith("-J") || (it.startsWith("-D") && it.contains(" "))
@@ -41,18 +54,45 @@ object ScriptRunner {
             }
         }
         val urls = paths.map { File(it).toURI().toURL() }.toTypedArray()
-        // Prefer platform loader so script deps (e.g. kotlin-stdlib on its classpath) win.
-        URLClassLoader(urls, ClassLoader.getPlatformClassLoader()).use { cl ->
-            val mainClass = Class.forName(compiled.entryPoint, true, cl)
-            val main = mainClass.getMethod("main", Array<String>::class.java)
-            try {
-                main.invoke(null, scriptArgs.toTypedArray())
-                return 0
-            } catch (e: java.lang.reflect.InvocationTargetException) {
-                val cause = e.cause ?: e
-                if (cause is RuntimeException) throw cause
-                if (cause is Error) throw cause
-                throw RuntimeException(cause)
+        val cacheKey = compiled.hash + '\u0000' + compiled.entryPoint + '\u0000' + compiled.classpath
+        val reuse = System.getProperty("KSCRIPTX_IN_DAEMON") == "1" ||
+            System.getenv("KSCRIPTX_IN_DAEMON") == "1"
+
+        val mainMethod: Method
+        val loader: URLClassLoader
+        var closeLoader = false
+        if (reuse) {
+            val cached = loaderCache[cacheKey]?.get()
+            if (cached != null && cached.urls.contentEquals(urls)) {
+                loader = cached.loader
+                mainMethod = cached.main
+            } else {
+                loader = URLClassLoader(urls, ClassLoader.getPlatformClassLoader())
+                val mainClass = Class.forName(compiled.entryPoint, true, loader)
+                mainMethod = mainClass.getMethod("main", Array<String>::class.java)
+                loaderCache[cacheKey] = SoftReference(CachedEntry(urls, loader, mainMethod))
+            }
+        } else {
+            loader = URLClassLoader(urls, ClassLoader.getPlatformClassLoader())
+            closeLoader = true
+            val mainClass = Class.forName(compiled.entryPoint, true, loader)
+            mainMethod = mainClass.getMethod("main", Array<String>::class.java)
+        }
+
+        try {
+            mainMethod.invoke(null, scriptArgs.toTypedArray())
+            return 0
+        } catch (e: java.lang.reflect.InvocationTargetException) {
+            val cause = e.cause ?: e
+            if (cause is RuntimeException) throw cause
+            if (cause is Error) throw cause
+            throw RuntimeException(cause)
+        } finally {
+            if (closeLoader) {
+                try {
+                    loader.close()
+                } catch (_: Exception) {
+                }
             }
         }
     }

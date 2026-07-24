@@ -16,9 +16,11 @@ object CacheStore {
         val dir = KPaths.cache / hash
         val ok = dir / "ok"
         val classes = dir / "classes"
+        // Hot path: ok + classes dir is enough to trust the entry; read sidecar files once.
+        if (!ok.exists() || !classes.exists()) return null
         val cp = dir / "classpath"
         val entry = dir / "entry"
-        if (!ok.exists() || !classes.exists() || !cp.exists() || !entry.exists()) return null
+        if (!cp.exists() || !entry.exists()) return null
         return CompiledScript(
             hash = hash,
             classesDir = classes,

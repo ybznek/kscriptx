@@ -126,8 +126,8 @@ CLI  →  parse annotations / resolve imports
             run
 ```
 
-Typical timings (this machine): **~0.2–0.4s** cold compile with native kotlinc;
-**~0.05–0.12s** cache hit (lower with the background daemon after the first run).
+Typical timings (this machine): **~0.7s** cold compile with native kotlinc;
+**~0.11–0.16s** cache hit without daemon; **~0.01s** cache hit with the background daemon.
 
 Disable the daemon for a single script (including shebang):
 

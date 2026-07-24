@@ -65,22 +65,11 @@ JAVA_OPTS=(
 )
 
 # AppCDS: reuse a shared class archive under ~/.kscriptx/cds (big warm-start win).
+# Stamp only the main jar — lib jars are rebuilt together with it.
 CDS_DIR="$KS_HOME/cds"
 CDS_FILE="$CDS_DIR/classes.jsa"
 CDS_STAMP="$CDS_DIR/classpath.stamp"
-stamp_classpath() {
-  local s
-  s="$(stat -c '%s.%Y' "$JAR" 2>/dev/null || stat -f '%z.%m' "$JAR" 2>/dev/null || echo x)"
-  if [[ -d "$LIB" ]]; then
-    local f
-    for f in "$LIB"/*.jar; do
-      [[ -f "$f" ]] || continue
-      s+=":$(stat -c '%s.%Y' "$f" 2>/dev/null || stat -f '%z.%m' "$f" 2>/dev/null || echo x)"
-    done
-  fi
-  printf '%s' "$s"
-}
-STAMP="$(stamp_classpath)"
+STAMP="$(stat -c '%s.%Y' "$JAR" 2>/dev/null || stat -f '%z.%m' "$JAR" 2>/dev/null || echo x)"
 if [[ -f "$CDS_FILE" && -f "$CDS_STAMP" && "$(cat "$CDS_STAMP" 2>/dev/null || true)" == "$STAMP" ]]; then
   JAVA_OPTS+=(-XX:SharedArchiveFile="$CDS_FILE")
 else
