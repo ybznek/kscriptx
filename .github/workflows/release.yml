@@ -89,10 +89,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up latest GraalVM CE (native-image)
+      - name: Set up GraalVM CE (native-image)
         uses: graalvm/setup-graalvm@v1
         with:
-          java-version: "latest"
+          # setup-graalvm does not accept "latest"; pin major and bump intentionally.
+          java-version: "25"
           distribution: "graalvm-community"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -112,6 +113,8 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
           ARCH: ${{ matrix.arch }}
           NATIVE_IMAGE_OPTIONS: "-J-Xmx5g"
+          # Prefer setup-graalvm's install; don't try SDKMAN on runners.
+          ENSURE_LATEST_GRAAL: "0"
         run: |
           set -euo pipefail
           chmod +x gradlew scripts/*.sh
@@ -119,6 +122,8 @@ jobs:
           ./gradlew :cli:build --quiet
 
           echo "==> building native kotlinc (${ARCH})"
+          # setup-graalvm exports JAVA_HOME / GRAALVM_HOME
+          export GRAALVM_HOME="${GRAALVM_HOME:-$JAVA_HOME}"
           INSTALL_DIR="$HOME/.kscriptx/native-kotlinc" ./scripts/build-native-kotlinc.sh
           test -x "$HOME/.kscriptx/native-kotlinc/kotlinc-native"
 
