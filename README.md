@@ -108,7 +108,12 @@ kscriptx [options] <script> [args...]
 ```bash
 kscriptx examples/hello.kts
 kscriptx examples/include_demo.kts
+kscriptx examples/multi/main.kts          # multi-file @file:Import
 kscriptx examples/App.kt
+kscriptx examples/ktor-hello.kts          # DependsOn: Ktor Netty server
+kscriptx examples/ffi-libc.kts            # Panama FFM → glibc (Linux, JDK 22+)
+kscriptx examples/gtk4-hello.kts          # Panama FFM → GTK4 window (Linux)
+# headless GTK check: xvfb-run -a kscriptx examples/gtk4-hello.kts --self-test
 kscriptx --idea examples/hello.kts
 kscriptx --package examples/hello.kts
 echo 'println("piped")' | kscriptx -
