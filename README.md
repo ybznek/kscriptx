@@ -160,18 +160,22 @@ Build takes ~1–2 minutes and several GB RAM.
 | `--gc=epsilon` | yes (`NI_GC`) | No GC pauses; ~30–40% faster alloc on short-lived workloads vs serial |
 | `-O3` | yes (`NI_OPT`) | Max AOT optimizations |
 | `-march=x86-64-v3` | amd64 (`NATIVE_MARCH`) | AVX2+ codegen; use `native` locally or `compatibility` for oldest CPUs |
+| analysis zip-strip | yes (`SHRINK_EMBEDDABLE`) | Drop wasm/konan/js backends + jline from analysis CP only |
+| `--features=KotlincReachabilityFeature` | yes | Keep PicoContainer + headless AWT/Swing (Graal 25 reachability) |
 
 PGO (`--pgo`) is still **not** in GraalVM CE 25 — only Oracle/EE. See `scripts/pgo-profile-kotlinc.sh`.
+ProGuard/R8 shrink on embeddable is **not** used (breaks ASM/Kotlin enums).
 
 **Cold compile reality:** a tiny `hello` is ~**200ms of real K2 work** inside `kotlinc-native`
 (fork + compile). Re-entrant `compiler.exec()` in a warm JVM is also ~180–200ms — so a
 persistent kotlinc worker barely helps for small scripts. Bigger levers: content-cache hits
 (~10ms with the CLI daemon), skipping Coursier when jars are already in `~/.m2` /
 `$KSCRIPTX_DIRECTORY/m2` (seeded from Gradle `modules-2`), and a thinner native *image*
-rebuild (jansi no-extract, slimmer build CP; optional PGO via `./scripts/pgo-profile-kotlinc.sh`
+rebuild (jansi no-extract, slimmer analysis CP; optional PGO via `./scripts/pgo-profile-kotlinc.sh`
 when your GraalVM supports it). `java.base.jar` is auto-trimmed (~15MB → ~10MB) by
 `scripts/trim-java-base.sh`. The PathUtil sidecar must stay the full embeddable jar
-(resources like `compiler-cli-root.xml`).
+(resources like `compiler-cli-root.xml`); `scripts/shrink-embeddable-for-ni.sh` only feeds
+native-image analysis.
 
 Lookup order: `KSCRIPTX_NATIVE_KOTLINC` → `~/.kscriptx/native-kotlinc` → install-relative
 `native-kotlinc/` next to `kscriptx.jar` → `/usr/lib/kscriptx/native-kotlinc`.

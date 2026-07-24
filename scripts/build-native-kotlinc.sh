@@ -13,16 +13,19 @@
 #   ENSURE_LATEST_GRAAL=0 ./scripts/build-native-kotlinc.sh  # don't sdk-install
 #   GRAALVM_HOME=/path/to/graalvm ./scripts/build-native-kotlinc.sh
 #   NI_GC=serial NI_OPT=2 NATIVE_MARCH=native ./scripts/build-native-kotlinc.sh
+#   SHRINK_EMBEDDABLE=0 ./scripts/build-native-kotlinc.sh  # skip analysis-CP zip strip
 #
 # Native-image defaults (GraalVM 25 CE, tuned for one-shot kotlinc):
 #   NI_GC=epsilon   — no GC (faster for short-lived process; set serial if you OOM)
 #   NI_OPT=3        — -O3 max AOT opts
 #   NATIVE_MARCH=x86-64-v3 on amd64 (AVX2+); use native for local, compatibility for oldest CPUs
+#   SHRINK_EMBEDDABLE=1 — drop non-JVM backends + jline from analysis CP only (full jar = sidecar)
 #
 # Workarounds baked in (see README):
 #   - exclude broken jline / embeddable META-INF/native-image configs
 #   - PathUtil @Substitute → sidecar kotlin-compiler-embeddable.jar
-#   - JansiLoader @Substitute → skip /tmp native extract (needs rebuild)
+#   - JansiLoader @Substitute → skip /tmp native extract
+#   - KotlincReachabilityFeature → PicoContainer + headless AWT/Swing (Graal 25)
 #   - -no-jdk + trimmed java.base.jar (scripts/trim-java-base.sh)
 #   - optional PGO: ./scripts/pgo-profile-kotlinc.sh (needs GraalVM with --pgo)
 
@@ -35,6 +38,7 @@ WORK_DIR="${WORK_DIR:-${TMPDIR:-/tmp}/kscriptx-native-kotlinc-build}"
 INSTALL_DIR="${INSTALL_DIR:-${HOME}/.kscriptx/native-kotlinc}"
 SKIP_INSTALL="${SKIP_INSTALL:-0}"
 SMOKE="${SMOKE:-1}"
+SHRINK_EMBEDDABLE="${SHRINK_EMBEDDABLE:-1}"
 
 die() { echo "error: $*" >&2; exit 1; }
 
@@ -82,15 +86,21 @@ main() {
 
   local compiler_jar=""
   local stdlib_jar=""
+  local reflect_jar=""
+  local coroutines_jar=""
   local j
   for j in "${jars[@]}"; do
     case "$(basename "$j")" in
       kotlin-compiler-embeddable-*.jar) compiler_jar="$j" ;;
       kotlin-stdlib-*.jar) stdlib_jar="$j" ;;
+      kotlin-reflect-*.jar) reflect_jar="$j" ;;
+      kotlinx-coroutines-core-jvm-*.jar|kotlinx-coroutines-core-*.jar) coroutines_jar="$j" ;;
     esac
   done
   [[ -n "$compiler_jar" ]] || die "kotlin-compiler-embeddable-*.jar not found in $LIB_COMPILER"
   [[ -n "$stdlib_jar" ]] || die "kotlin-stdlib-*.jar not found in $LIB_COMPILER"
+  [[ -n "$reflect_jar" ]] || die "kotlin-reflect-*.jar not found in $LIB_COMPILER (CLI args / ReflectJvmMapping)"
+  [[ -n "$coroutines_jar" ]] || die "kotlinx-coroutines-core*.jar not found in $LIB_COMPILER (MockApplication → GlobalScope)"
 
   local jdk
   jdk="$(resolve_jdk_for_jmods)"
@@ -99,7 +109,7 @@ main() {
   rm -rf "$WORK_DIR"
   mkdir -p "$WORK_DIR/substitutions/classes" "$WORK_DIR/kotlin-home/lib" "$WORK_DIR/jdk-stub"
 
-  echo "==> compile PathUtil + Jansi substitutions"
+  echo "==> compile PathUtil + Jansi + reachability Feature"
   local svm="$JAVA_HOME/lib/svm/builder/svm.jar"
   local pointsto="$JAVA_HOME/lib/svm/builder/pointsto.jar"
   local nib="$JAVA_HOME/lib/svm/builder/native-image-base.jar"
@@ -107,11 +117,23 @@ main() {
   javac --class-path "$svm:$pointsto:$nib" \
     -d "$WORK_DIR/substitutions/classes" \
     "$ASSETS/substitutions/src/PathUtilSubstitution.java" \
-    "$ASSETS/substitutions/src/JansiSubstitution.java"
+    "$ASSETS/substitutions/src/JansiSubstitution.java" \
+    "$ASSETS/substitutions/src/KotlincReachabilityFeature.java"
+
+  local analysis_jar="$compiler_jar"
+  if [[ "$SHRINK_EMBEDDABLE" == "1" ]]; then
+    echo "==> shrink embeddable for analysis CP (full jar stays PathUtil sidecar)"
+    chmod +x "$ROOT/scripts/shrink-embeddable-for-ni.sh"
+    analysis_jar="$WORK_DIR/kotlin-compiler-embeddable-ni.jar"
+    "$ROOT/scripts/shrink-embeddable-for-ni.sh" "$compiler_jar" "$analysis_jar"
+  fi
 
   local cp
-  # Slim build CP: embeddable + stdlib + annotations (+ substitution). Drop daemon/build-tools jars.
-  cp="$compiler_jar:$stdlib_jar"
+  # Slim build CP (both reflect + coroutines are required for a working Graal 25 image):
+  #   kotlin-reflect  — CLI argument reflection (ReflectJvmMapping)
+  #   kotlinx-coroutines — MockApplication references GlobalScope
+  # Drop daemon/build-tools jars. PathUtil sidecar still uses the full embeddable.
+  cp="$analysis_jar:$stdlib_jar:$reflect_jar:$coroutines_jar"
   for j in "${jars[@]}"; do
     case "$(basename "$j")" in
       annotations-*.jar) cp="$cp:$j" ;;
@@ -151,7 +173,7 @@ main() {
     fi
     extra_ni+=("--pgo=$PGO_DATA")
   fi
-  echo "    gc=$ni_gc  -O$ni_opt  -march=$ni_march"
+  echo "    gc=$ni_gc  -O$ni_opt  -march=$ni_march  shrink=$SHRINK_EMBEDDABLE"
   # Options before main class (GraalVM 25 is strict about argument order).
   native-image \
     --no-fallback \
@@ -161,6 +183,8 @@ main() {
     -H:+ReportExceptionStackTraces \
     -H:+UnlockExperimentalVMOptions \
     -H:+AllowIncompleteClasspath \
+    -H:+AddAllCharsets \
+    --features=KotlincReachabilityFeature \
     --enable-url-protocols=jar,file \
     --exclude-config '.*jline.*' '.*' \
     --exclude-config '.*kotlin-compiler-embeddable.*' 'META-INF/native-image/.*' \
@@ -203,15 +227,20 @@ main() {
     cat >"$WORK_DIR/smoke/Hello.kt" <<'EOF'
 fun main(args: Array<String>) { println("native-ok ${args.joinToString()}") }
 EOF
-    "$WORK_DIR/kotlinc-native" \
-      -kotlin-home "$WORK_DIR/kotlin-home" \
-      -no-jdk \
-      -classpath "$stdlib_jar:$WORK_DIR/java.base.jar" \
-      -d "$WORK_DIR/smoke/out" \
-      -jvm-target 17 \
-      -no-stdlib \
-      -no-reflect \
-      "$WORK_DIR/smoke/Hello.kt"
+    # Run next to sidecar jar (PathUtil default) and disable scripting plugin like kscriptx.
+    (
+      cd "$WORK_DIR"
+      ./kotlinc-native \
+        -kotlin-home ./kotlin-home \
+        -no-jdk \
+        -classpath "./kotlin-home/lib/kotlin-stdlib.jar:./java.base.jar" \
+        -d ./smoke/out \
+        -jvm-target 17 \
+        -no-stdlib \
+        -no-reflect \
+        -Xdisable-default-scripting-plugin \
+        ./smoke/Hello.kt
+    )
     [[ -f "$WORK_DIR/smoke/out/HelloKt.class" ]] || die "smoke compile produced no HelloKt.class"
     echo "smoke OK"
   fi
