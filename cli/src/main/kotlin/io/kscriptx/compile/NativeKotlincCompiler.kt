@@ -14,26 +14,63 @@ import kotlin.io.path.isRegularFile
 import kotlin.io.path.writeText
 
 /**
- * Fast source-only compiles via GraalVM native kotlinc when installed under
- * ~/.kscriptx/native-kotlinc/ (or KSCRIPTX_NATIVE_KOTLINC).
+ * Fast source-only compiles via GraalVM native kotlinc.
+ *
+ * Search order:
+ * 1. `KSCRIPTX_NATIVE_KOTLINC`
+ * 2. `$KSCRIPTX_DIRECTORY/native-kotlinc` (default `~/.kscriptx/native-kotlinc`)
+ * 3. Install-relative `native-kotlinc/` next to `kscriptx.jar` (portable / Debian)
+ * 4. `/usr/lib/kscriptx/native-kotlinc` (Debian package)
  */
 object NativeKotlincCompiler {
-    private val nativeRoot: Path
-        get() {
-            System.getenv("KSCRIPTX_NATIVE_KOTLINC")?.trim()?.takeIf { it.isNotEmpty() }?.let {
-                return Path(it)
-            }
-            return KPaths.home / "native-kotlinc"
-        }
+    val nativeRoot: Path
+        get() = resolveRoot()
+            ?: error(
+                "Native kotlinc is required. Looked in:\n" +
+                    candidateRoots().joinToString("\n") { "  - $it" } +
+                    "\nInstall via the Debian package, a release tarball, or " +
+                    "./scripts/build-native-kotlinc.sh (or set KSCRIPTX_NATIVE_KOTLINC)."
+            )
 
     private val binary get() = nativeRoot / "kotlinc-native"
     private val kotlinHome get() = nativeRoot / "kotlin-home"
     private val javaBaseJar get() = nativeRoot / "java.base.jar"
     private val compilerJar get() = nativeRoot / "kotlin-compiler-embeddable.jar"
 
-    fun isAvailable(): Boolean =
-        binary.exists() && binary.isRegularFile() && binary.isExecutable() &&
-            kotlinHome.exists() && javaBaseJar.exists() && compilerJar.exists()
+    fun isAvailable(): Boolean = resolveRoot() != null
+
+    fun resolveRoot(): Path? = candidateRoots().firstOrNull { isValidInstall(it) }
+
+    fun candidateRoots(): List<Path> {
+        val out = linkedSetOf<Path>()
+        System.getenv("KSCRIPTX_NATIVE_KOTLINC")?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            out.add(Path(it))
+        }
+        out.add(KPaths.home / "native-kotlinc")
+        installDirBesideJar()?.let { out.add(it / "native-kotlinc") }
+        out.add(Path("/usr/lib/kscriptx/native-kotlinc"))
+        return out.toList()
+    }
+
+    fun isValidInstall(root: Path): Boolean {
+        val bin = root / "kotlinc-native"
+        return bin.exists() && bin.isRegularFile() && bin.isExecutable() &&
+            (root / "kotlin-home").exists() &&
+            (root / "java.base.jar").exists() &&
+            (root / "kotlin-compiler-embeddable.jar").exists()
+    }
+
+    /** Directory containing kscriptx.jar when running from an install tree. */
+    private fun installDirBesideJar(): Path? {
+        return try {
+            val loc = NativeKotlincCompiler::class.java.protectionDomain?.codeSource?.location
+                ?: return null
+            val jar = java.nio.file.Paths.get(loc.toURI())
+            jar.parent
+        } catch (_: Exception) {
+            null
+        }
+    }
 
     /**
      * Compile [sources] into [outputClassesDir] using the native binary.
@@ -45,7 +82,11 @@ object NativeKotlincCompiler {
         outputClassesDir: Path,
         compilerOptions: List<String> = emptyList(),
     ) {
-        require(isAvailable()) { "Native kotlinc is not installed at $nativeRoot" }
+        val root = nativeRoot
+        val bin = root / "kotlinc-native"
+        val kHome = root / "kotlin-home"
+        val jBase = root / "java.base.jar"
+        val cJar = root / "kotlin-compiler-embeddable.jar"
 
         if (outputClassesDir.toFile().exists()) outputClassesDir.toFile().deleteRecursively()
         outputClassesDir.createDirectories()
@@ -63,7 +104,7 @@ object NativeKotlincCompiler {
 
             val sep = java.io.File.pathSeparator
             val fullCp = buildString {
-                append(javaBaseJar.absolutePathString())
+                append(jBase.absolutePathString())
                 if (classpath.isNotBlank()) {
                     append(sep)
                     append(classpath)
@@ -71,8 +112,8 @@ object NativeKotlincCompiler {
             }
 
             val cmd = buildList {
-                add(binary.absolutePathString())
-                add("-kotlin-home"); add(kotlinHome.absolutePathString())
+                add(bin.absolutePathString())
+                add("-kotlin-home"); add(kHome.absolutePathString())
                 add("-no-jdk")
                 add("-classpath"); add(fullCp)
                 add("-d"); add(outputClassesDir.absolutePathString())
@@ -84,11 +125,11 @@ object NativeKotlincCompiler {
             }
 
             val pb = ProcessBuilder(cmd)
-                .directory(nativeRoot.toFile())
+                .directory(root.toFile())
                 .redirectErrorStream(true)
             // Ensure PathUtil substitution finds the sidecar jar next to the binary.
             // Set both names: new builds read KSCRIPTX_*; older native images still check KSCRIPT3_*.
-            val jarPath = compilerJar.absolutePathString()
+            val jarPath = cJar.absolutePathString()
             pb.environment()["KSCRIPTX_KOTLIN_COMPILER_JAR"] = jarPath
             pb.environment()["KSCRIPT3_KOTLIN_COMPILER_JAR"] = jarPath
             val proc = pb.start()

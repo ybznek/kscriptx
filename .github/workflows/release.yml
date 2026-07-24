@@ -7,14 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release (e.g. 0.1.0). Creates tag v<version> if missing."
+        description: "Version to release (e.g. 0.1.1). Creates tag v<version> if missing."
         required: true
         type: string
-      build_native:
-        description: "Also build Linux native kotlinc (needs lots of RAM; may fail on small runners)"
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: write
@@ -46,54 +41,63 @@ jobs:
 
   linux:
     needs: version
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
+      - name: Set up GraalVM CE 21 (native-image)
+        uses: graalvm/setup-graalvm@v1
         with:
-          distribution: temurin
           java-version: "21"
+          distribution: "graalvm-community"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build and package (tar + deb + windows zip)
+      - name: Build CLI + native kotlinc + packages
         env:
           VERSION: ${{ needs.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          NATIVE_IMAGE_OPTIONS: "-J-Xmx5g"
         run: |
+          set -euo pipefail
           chmod +x gradlew scripts/*.sh
-          # Align Gradle project version with release tag
           sed -i -E "s/version = \"[^\"]+\"/version = \"${VERSION}\"/" cli/build.gradle.kts
-          ./scripts/package-dist.sh "$VERSION"
-          ./scripts/package-tarball.sh "$VERSION"
-          ./scripts/package-deb.sh "$VERSION"
-          ./scripts/package-windows.sh "$VERSION"
-          ls -lh dist/
+          ./gradlew :cli:build --quiet
 
-      - name: Build native kotlinc (optional, heavy)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_native }}
-        continue-on-error: true
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          # GraalVM CE via SDKMAN — needs several GB RAM; may OOM on free runners
-          curl -s "https://get.sdkman.io" | bash
-          source "$HOME/.sdkman/bin/sdkman-init.sh"
-          sdk install java 21.0.2-graalce </dev/null || true
-          sdk use java 21.0.2-graalce
-          export JAVA_HOME="$SDKMAN_DIR/candidates/java/current"
-          export PATH="$JAVA_HOME/bin:$PATH"
-          export NATIVE_IMAGE_OPTIONS="-J-Xmx5g"
-          ./scripts/build-native-kotlinc.sh
-          ./scripts/package-native-kotlinc.sh "$VERSION"
+          echo "==> building native kotlinc (${ARCH})"
+          INSTALL_DIR="$HOME/.kscriptx/native-kotlinc" ./scripts/build-native-kotlinc.sh
+          test -x "$HOME/.kscriptx/native-kotlinc/kotlinc-native"
+
+          export INCLUDE_NATIVE=1
+          export NATIVE_DIR="$HOME/.kscriptx/native-kotlinc"
+          export ARCH
+          ./scripts/package-dist.sh "$VERSION"
+          ./scripts/package-tarball.sh "$VERSION" "$ARCH"
+          ./scripts/package-deb.sh "$VERSION" "$NATIVE_DIR"
+          ./scripts/package-native-kotlinc.sh "$VERSION" "$NATIVE_DIR" "$ARCH"
+          # Portable windows zip only from amd64 job (JVM jars)
+          if [[ "$ARCH" == "amd64" ]]; then
+            ./scripts/package-windows.sh "$VERSION"
+          fi
           ls -lh dist/
+          test -f "dist/kscriptx_${VERSION}_${ARCH}.deb"
+          test -f "dist/kscriptx-${VERSION}-linux-${ARCH}.tar.gz"
+          test -x "dist/kscriptx-${VERSION}/bin/native-kotlinc/kotlinc-native"
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-packages
+          name: linux-packages-${{ matrix.arch }}
           path: |
             dist/*.tar.gz
             dist/*.deb
@@ -147,20 +151,23 @@ jobs:
           path: release-assets
 
       - name: Flatten assets
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           mkdir -p assets
           find release-assets -type f \( -name '*.deb' -o -name '*.tar.gz' -o -name '*.zip' \) -print0 |
             while IFS= read -r -d '' f; do
               base="$(basename "$f")"
-              # Prefer a single copy of each filename (linux + windows may both ship the zip)
               if [[ ! -e "assets/$base" ]]; then
                 cp -v "$f" "assets/$base"
               fi
             done
           ls -lh assets/
-          test -f "assets/kscriptx_${{ needs.version.outputs.version }}_all.deb"
-          test -f "assets/kscriptx-${{ needs.version.outputs.version }}-linux-amd64.tar.gz"
-          test -f "assets/kscriptx-${{ needs.version.outputs.version }}-windows-amd64.zip"
+          test -f "assets/kscriptx_${VERSION}_amd64.deb"
+          test -f "assets/kscriptx_${VERSION}_arm64.deb"
+          test -f "assets/kscriptx-${VERSION}-linux-amd64.tar.gz"
+          test -f "assets/kscriptx-${VERSION}-linux-arm64.tar.gz"
+          test -f "assets/kscriptx-${VERSION}-windows-amd64.zip"
 
       - name: Create GitHub Release
         env:
@@ -168,7 +175,6 @@ jobs:
           TAG: ${{ needs.version.outputs.tag }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
-          # Ensure tag exists for workflow_dispatch
           if ! git ls-remote --tags origin "refs/tags/${TAG}" | grep -q .; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -181,12 +187,17 @@ jobs:
             echo "## kscriptx ${VERSION}"
             echo
             echo "### Packages"
-            echo "- **Debian/Ubuntu:** \`kscriptx_${VERSION}_all.deb\` — \`sudo apt install ./kscriptx_${VERSION}_all.deb\`"
-            echo "- **Linux portable:** \`kscriptx-${VERSION}-linux-amd64.tar.gz\`"
-            echo "- **Windows portable:** \`kscriptx-${VERSION}-windows-amd64.zip\` (JDK 17+ required)"
-            echo "- **Native kotlinc (Linux amd64):** \`kscriptx-native-kotlinc-${VERSION}-linux-amd64.tar.gz\` (if built)"
+            echo "- **Debian/Ubuntu amd64:** \`kscriptx_${VERSION}_amd64.deb\` — includes native kotlinc"
+            echo "- **Debian/Ubuntu arm64 (Raspberry Pi):** \`kscriptx_${VERSION}_arm64.deb\` — includes native kotlinc"
+            echo "- **Linux portable amd64/arm64:** \`kscriptx-${VERSION}-linux-*.tar.gz\` (native included)"
+            echo "- **Windows portable:** \`kscriptx-${VERSION}-windows-amd64.zip\` (JDK 17+; native kotlinc not bundled)"
             echo
-            echo "After installing the CLI, install native kotlinc under \`~/.kscriptx/native-kotlinc\` (required for script compiles). See README."
+            echo "Debian install:"
+            echo
+            echo '```bash'
+            echo "sudo apt install ./kscriptx_${VERSION}_amd64.deb   # or _arm64.deb"
+            echo "kscriptx examples/hello.kts"
+            echo '```'
           } >"$NOTES"
 
           if gh release view "$TAG" >/dev/null 2>&1; then

@@ -14,7 +14,7 @@ import io.kscriptx.exec.ScriptRunner
 import kotlin.io.path.Path
 import kotlin.system.exitProcess
 
-const val VERSION = "0.1.0"
+const val VERSION = "0.1.1"
 
 fun main(args: Array<String>) {
     val request = ArgParser.parse(args)

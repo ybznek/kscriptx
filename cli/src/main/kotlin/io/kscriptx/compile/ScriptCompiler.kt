@@ -50,8 +50,10 @@ object ScriptCompiler {
 
     fun compile(script: ResolvedScript): CompiledScript {
         require(NativeKotlincCompiler.isAvailable()) {
-            "Native kotlinc is required. Install with: ./scripts/build-native-kotlinc.sh " +
-                "(or set KSCRIPTX_NATIVE_KOTLINC). Looked in ${KPaths.home / "native-kotlinc"}"
+            "Native kotlinc is required. Looked in:\n" +
+                NativeKotlincCompiler.candidateRoots().joinToString("\n") { "  - $it" } +
+                "\nInstall the Debian package (includes native), unpack a release tarball, " +
+                "or run ./scripts/build-native-kotlinc.sh (or set KSCRIPTX_NATIVE_KOTLINC)."
         }
 
         val hash = CacheStore.hashOf(script)

@@ -11,26 +11,29 @@ Stack: **Kotlin 2.4.10** · **Gradle 9.6.1** (project build only).
 ## Requirements
 
 - **JDK 17+**
-- **Native kotlinc** installed under `~/.kscriptx/native-kotlinc` (see below)
+- **Native kotlinc** — bundled in Debian packages and Linux release tarballs.
+  From source builds, install under `~/.kscriptx/native-kotlinc` (see below).
 
 ## Install
 
 ### From GitHub Releases (recommended)
 
-Releases are built automatically when you push a tag `v*` (e.g. `v0.1.0`), or via
+Releases are built automatically when you push a tag `v*` (e.g. `v0.1.1`), or via
 **Actions → Release → Run workflow**.
 
-**Debian / Ubuntu**
+**Debian / Ubuntu** (includes native kotlinc)
 
 ```bash
-# download kscriptx_<ver>_all.deb from the release
-sudo apt install ./kscriptx_<ver>_all.deb
+# amd64 or arm64 (Raspberry Pi) matching your machine
+sudo apt install ./kscriptx_<ver>_amd64.deb
+# or: sudo apt install ./kscriptx_<ver>_arm64.deb
+kscriptx examples/hello.kts
 ```
 
-**Linux (portable tarball)**
+**Linux (portable tarball)** — native kotlinc included under `bin/native-kotlinc/`
 
 ```bash
-tar -xzf kscriptx-<ver>-linux-amd64.tar.gz
+tar -xzf kscriptx-<ver>-linux-amd64.tar.gz   # or linux-arm64
 export PATH="$PWD/kscriptx-<ver>/bin:$PATH"
 ```
 
@@ -39,15 +42,8 @@ export PATH="$PWD/kscriptx-<ver>/bin:$PATH"
 ```powershell
 # unzip kscriptx-<ver>-windows-amd64.zip
 # requires JDK 17+ on PATH / JAVA_HOME
+# native kotlinc is not bundled for Windows yet — use WSL or build on Linux
 .\bin\kscriptx.bat examples\hello.kts
-```
-
-Then install **native kotlinc** (required for compiles) — either the release asset
-`kscriptx-native-kotlinc-<ver>-linux-amd64.tar.gz` (Linux amd64) or build locally:
-
-```bash
-./scripts/build-native-kotlinc.sh
-# or unpack the release asset to ~/.kscriptx/native-kotlinc
 ```
 
 ### From source
@@ -68,11 +64,11 @@ Windows: `gradlew.bat :cli:build` then `bin\kscriptx.bat examples\hello.kts`.
 ### Local packaging
 
 ```bash
-./scripts/package-dist.sh          # dist/kscriptx-<ver>/
-./scripts/package-tarball.sh       # .tar.gz
-./scripts/package-deb.sh           # .deb (needs dpkg-deb)
-./scripts/package-windows.sh       # .zip
-./scripts/package-native-kotlinc.sh  # native kotlinc tarball (after build)
+INCLUDE_NATIVE=1 ./scripts/package-dist.sh
+./scripts/package-tarball.sh
+./scripts/package-deb.sh           # arch-specific .deb with native (needs dpkg-deb)
+./scripts/package-windows.sh
+./scripts/package-native-kotlinc.sh
 ```
 
 ## Usage
@@ -135,7 +131,8 @@ Typical timings (this machine): **~0.2–0.4s** cold compile with native kotlinc
 
 ## Native kotlinc
 
-Required for script compiles:
+Bundled in Debian packages (`/usr/lib/kscriptx/native-kotlinc`) and Linux release tarballs
+(`bin/native-kotlinc/`). From a source checkout, build it yourself:
 
 ```bash
 ./gradlew :cli:build
@@ -145,7 +142,10 @@ Required for script compiles:
 Needs **GraalVM CE 21+** with `native-image` (e.g. `sdk install java 21.0.2-graalce`) and a JDK
 with `jmods`. Build takes ~1–2 minutes and several GB RAM.
 
-Install layout (`~/.kscriptx/native-kotlinc` or `KSCRIPTX_NATIVE_KOTLINC`):
+Lookup order: `KSCRIPTX_NATIVE_KOTLINC` → `~/.kscriptx/native-kotlinc` → install-relative
+`native-kotlinc/` next to `kscriptx.jar` → `/usr/lib/kscriptx/native-kotlinc`.
+
+Layout:
 
 ```text
 native-kotlinc/
