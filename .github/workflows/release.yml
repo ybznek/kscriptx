@@ -126,9 +126,8 @@ jobs:
         env:
           VERSION: ${{ needs.version.outputs.version }}
           ARCH: ${{ matrix.arch }}
-          # Cap builder heap so the C linker / OS still have room (esp. on arm).
-          NATIVE_IMAGE_OPTIONS: ${{ matrix.arch == 'arm64' && '-J-Xmx6g' || '-J-Xmx5g' }}
-          # Prefer setup-graalvm's install; don't try SDKMAN on runners.
+          # Do not cap -Xmx: a fixed 5g OOM'd amd64 analysis. Let Graal use ~80% of RAM;
+          # arm64 relies on the swap step above.
           ENSURE_LATEST_GRAAL: "0"
         run: |
           set -euo pipefail
