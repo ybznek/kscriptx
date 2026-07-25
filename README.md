@@ -16,7 +16,19 @@ Stack: **Kotlin 2.4.10** · **Gradle 9.6.1** (project build only).
 
 ## Install
 
-### From GitHub Releases (recommended)
+### SDKMAN (recommended)
+
+Once the `kscriptx` candidate is live on SDKMAN:
+
+```bash
+sdk install kscriptx
+sdk upgrade kscriptx          # later updates
+kscriptx examples/hello.kts
+```
+
+Vendor onboarding / release automation: [docs/sdkman.md](docs/sdkman.md).
+
+### From GitHub Releases
 
 Releases are built automatically when you push a tag `v*` (e.g. `v0.1.1`), or via
 **Actions → Release → Run workflow**.
@@ -34,6 +46,13 @@ kscriptx examples/hello.kts
 
 ```bash
 tar -xzf kscriptx-<ver>-linux-amd64.tar.gz   # or linux-arm64
+export PATH="$PWD/kscriptx-<ver>/bin:$PATH"
+```
+
+**SDKMAN / portable JVM zip** (JDK 17+; no bundled native kotlinc)
+
+```bash
+unzip kscriptx-<ver>-bin.zip
 export PATH="$PWD/kscriptx-<ver>/bin:$PATH"
 ```
 
@@ -68,6 +87,7 @@ INCLUDE_NATIVE=1 ./scripts/package-dist.sh
 ./scripts/package-tarball.sh
 ./scripts/package-deb.sh           # arch-specific .deb with native (needs dpkg-deb)
 ./scripts/package-windows.sh
+./scripts/package-sdkman.sh        # universal JVM zip for SDKMAN (kscriptx-<ver>-bin.zip)
 ./scripts/package-native-kotlinc.sh
 ```
 
