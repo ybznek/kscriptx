@@ -69,6 +69,15 @@ tasks.register("coverage") {
 tasks.jar {
     manifest {
         attributes["Main-Class"] = "io.kscriptx.MainKt"
+        attributes["Implementation-Version"] = version.toString()
+    }
+}
+
+tasks.processResources {
+    val ver = project.version.toString()
+    inputs.property("version", ver)
+    filesMatching("kscriptx-version.txt") {
+        filter { line -> line.replace("@version@", ver) }
     }
 }
 

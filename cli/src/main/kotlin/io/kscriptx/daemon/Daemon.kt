@@ -19,6 +19,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
+import java.nio.file.attribute.PosixFilePermission
 import kotlin.concurrent.withLock
 import kotlin.io.path.createDirectories
 import kotlin.io.path.deleteIfExists
@@ -65,6 +66,18 @@ object Daemon {
     fun portFile() = dir() / "port"
     fun sockFile() = dir() / "sock"
     fun pidFile() = dir() / "pid"
+
+    /** Stop a background daemon before wiping `$home/daemon/` (e.g. `--clear-cache`). */
+    fun shutdownRunning() {
+        try {
+            if (!pidFile().exists()) return
+            val pid = pidFile().readText().trim().toLongOrNull() ?: return
+            ProcessHandle.of(pid).ifPresent { handle ->
+                if (handle.isAlive) handle.destroy()
+            }
+        } catch (_: Exception) {
+        }
+    }
 
     fun touchActivity() {
         lastActivityMs.set(System.currentTimeMillis())
@@ -131,6 +144,7 @@ object Daemon {
                 Files.deleteIfExists(sockFile())
                 val ch = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
                 ch.bind(UnixDomainSocketAddress.of(sockFile()))
+                restrictSocketToOwner(sockFile())
                 unixServer = ch
                 // Marker so clients know UDS is active (path is sockFile itself).
                 portFile().deleteIfExists()
@@ -196,6 +210,17 @@ object Daemon {
         }
     }
 
+    private fun restrictSocketToOwner(path: java.nio.file.Path) {
+        try {
+            Files.setPosixFilePermissions(
+                path,
+                java.util.EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE),
+            )
+        } catch (_: UnsupportedOperationException) {
+        } catch (_: Exception) {
+        }
+    }
+
     private fun cleanupEndpointFiles() {
         portFile().deleteIfExists()
         pidFile().deleteIfExists()
@@ -222,31 +247,36 @@ object Daemon {
 
             // Single-flight: System.out/err and user.dir are process-global.
             runLock.withLock {
-                if (cwd.isNotBlank()) {
-                    System.setProperty("user.dir", cwd)
-                }
-                val oldOut = System.out
-                val oldErr = System.err
-                val outStream = FramingPrintStream(output, 'O'.code)
-                val errStream = FramingPrintStream(output, 'E'.code)
-                System.setOut(outStream)
-                System.setErr(errStream)
-                val code = try {
-                    System.setProperty("KSCRIPTX_IN_DAEMON", "1")
-                    io.kscriptx.runMain(args, fromDaemon = true)
-                } catch (t: Throwable) {
-                    t.printStackTrace(errStream)
-                    1
+                val previousDir = System.getProperty("user.dir")
+                try {
+                    if (cwd.isNotBlank()) {
+                        System.setProperty("user.dir", cwd)
+                    }
+                    val oldOut = System.out
+                    val oldErr = System.err
+                    val outStream = FramingPrintStream(output, 'O'.code)
+                    val errStream = FramingPrintStream(output, 'E'.code)
+                    System.setOut(outStream)
+                    System.setErr(errStream)
+                    val code = try {
+                        System.setProperty("KSCRIPTX_IN_DAEMON", "1")
+                        io.kscriptx.runMain(args, fromDaemon = true)
+                    } catch (t: Throwable) {
+                        t.printStackTrace(errStream)
+                        1
+                    } finally {
+                        System.clearProperty("KSCRIPTX_IN_DAEMON")
+                        System.setOut(oldOut)
+                        System.setErr(oldErr)
+                        outStream.flush()
+                        errStream.flush()
+                    }
+                    output.writeByte('X'.code)
+                    output.writeInt(code)
+                    output.flush()
                 } finally {
-                    System.clearProperty("KSCRIPTX_IN_DAEMON")
-                    System.setOut(oldOut)
-                    System.setErr(oldErr)
-                    outStream.flush()
-                    errStream.flush()
+                    System.setProperty("user.dir", previousDir)
                 }
-                output.writeByte('X'.code)
-                output.writeInt(code)
-                output.flush()
             }
         } catch (_: Exception) {
             // client gone

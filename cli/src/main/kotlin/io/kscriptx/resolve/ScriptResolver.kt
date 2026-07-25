@@ -135,11 +135,31 @@ object ScriptResolver {
     }
 
     private fun fetchUrl(url: String): String {
+        require(url.startsWith("http://") || url.startsWith("https://")) {
+            "Only http(s) URLs are supported: $url"
+        }
         KPaths.urlCache.createDirectories()
         val key = Hasher.md5(url)
         val cached = KPaths.urlCache / key
         if (cached.exists()) return cached.readText()
-        val text = URI(url).toURL().openStream().bufferedReader().readText()
+        val conn = URI(url).toURL().openConnection() as java.net.HttpURLConnection
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 60_000
+        conn.instanceFollowRedirects = true
+        val maxBytes = 10 * 1024 * 1024
+        val text = conn.inputStream.use { input ->
+            val buf = ByteArray(8192)
+            val out = java.io.ByteArrayOutputStream()
+            var total = 0
+            while (true) {
+                val n = input.read(buf)
+                if (n <= 0) break
+                total += n
+                require(total <= maxBytes) { "URL content too large (> ${maxBytes} bytes): $url" }
+                out.write(buf, 0, n)
+            }
+            out.toString(Charsets.UTF_8)
+        }
         cached.writeText(text)
         return text
     }

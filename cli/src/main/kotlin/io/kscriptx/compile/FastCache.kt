@@ -46,6 +46,10 @@ object FastCache {
 
     private val hot = ConcurrentHashMap<String, HotEntry>()
 
+    fun clearMemory() {
+        hot.clear()
+    }
+
     /**
      * Returns a ready [CompiledScript] on hit (disk meta on first hit, then in-process reuse
      * while mtimes match).

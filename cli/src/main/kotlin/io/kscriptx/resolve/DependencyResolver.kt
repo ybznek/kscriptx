@@ -208,7 +208,9 @@ object DependencyResolver {
 
     private fun parseGav(coord: String): GradleModules2Cache.Gav {
         val parts = coord.split(':')
-        require(parts.size >= 3) { "Invalid Maven coordinate (want g:a:v): $coord" }
+        require(parts.size == 3) {
+            "Invalid Maven coordinate (want group:artifact:version): $coord"
+        }
         return GradleModules2Cache.Gav(parts[0], parts[1], parts[2])
     }
 }

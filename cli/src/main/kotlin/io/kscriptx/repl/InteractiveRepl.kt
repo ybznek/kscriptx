@@ -5,7 +5,7 @@ import io.kscriptx.model.ResolvedScript
 import kotlin.io.path.absolutePathString
 
 object InteractiveRepl {
-    fun start(script: ResolvedScript, compiled: CompiledScript) {
+    fun start(script: ResolvedScript, compiled: CompiledScript): Int {
         val cp = buildString {
             append(compiled.classesDir.absolutePathString())
             if (compiled.classpath.isNotBlank()) {
@@ -19,10 +19,10 @@ object InteractiveRepl {
             System.err.println("kotlinc not found on PATH. Install Kotlin or add kotlinc to PATH.")
             System.err.println("Classpath prepared at:")
             System.err.println(cp)
-            return
+            return 1
         }
         val cmd = listOf(kotlinc, "-classpath", cp)
-        ProcessBuilder(cmd).inheritIO().start().waitFor()
+        return ProcessBuilder(cmd).inheritIO().start().waitFor()
     }
 
     private fun findKotlinc(): String? {
@@ -37,7 +37,6 @@ object InteractiveRepl {
             } catch (_: Exception) {
             }
         }
-        // try next to kotlin home / java
         val kotlinHome = System.getenv("KOTLIN_HOME")
         if (!kotlinHome.isNullOrBlank()) {
             val bin = if (System.getProperty("os.name").lowercase().contains("win")) {

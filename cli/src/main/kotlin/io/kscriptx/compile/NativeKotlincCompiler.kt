@@ -87,8 +87,9 @@ object NativeKotlincCompiler {
                 for (f in files) {
                     if (!f.isRegularFile()) continue
                     Files.newInputStream(f).use { input ->
-                        while (input.read(buf) >= 0) {
-                            // discard — touch pages only
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n <= 0) break
                         }
                     }
                 }

@@ -186,8 +186,6 @@ fn main() -> ExitCode {
                 };
                 let code = if (0..=255).contains(&code) {
                     code as u8
-                } else if code == 0 {
-                    0
                 } else {
                     1
                 };

@@ -18,6 +18,10 @@ case "$uname_s" in
 esac
 
 if ! command -v cargo >/dev/null 2>&1; then
+  if [[ "${CI:-}" == "true" || "${KSCRIPTX_REQUIRE_NATIVE_HELPERS:-}" == "1" ]]; then
+    echo "cargo not found — native helpers are required in this environment" >&2
+    exit 1
+  fi
   echo "cargo not found — skipping native helpers (daemon fast-path disabled)" >&2
   exit 0
 fi

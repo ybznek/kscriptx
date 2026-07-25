@@ -1,10 +1,13 @@
 .gradle/
 build/
 **/build/
+cli/bin/
 .idea/
 *.iml
 out/
 dist/
+__pycache__/
+*.pyc
 *.class
 *.log
 .DS_Store

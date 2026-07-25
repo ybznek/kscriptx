@@ -234,9 +234,7 @@ wipe_kscriptx_cache() {
 wipe_kscript_cache() {
   rm -rf "$KS_CACHE"
   mkdir -p "$KS_CACHE"
-  # Classic kscript 4.x defaults to ~/.cache/kscript when KSCRIPT_CACHE_DIR is unset;
-  # with the env set below, only KS_CACHE is used.
-  rm -rf "${HOME}/.cache/kscript" 2>/dev/null || true
+  # Do not touch ~/.cache/kscript — benchmarks use KSCRIPT_CACHE_DIR only.
 }
 
 run_kscriptx() {

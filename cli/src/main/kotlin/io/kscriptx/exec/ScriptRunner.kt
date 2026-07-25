@@ -21,6 +21,10 @@ object ScriptRunner {
     /** Reused across daemon requests (avoids reopening dependency jars every run). */
     private val loaderCache = ConcurrentHashMap<String, SoftReference<CachedEntry>>()
 
+    fun clearLoaderCache() {
+        loaderCache.clear()
+    }
+
     fun run(compiled: CompiledScript, scriptArgs: List<String>, workingDir: Path? = null): Int {
         val needsSeparateJvm = compiled.kotlinOptions.any {
             it.startsWith("-J") || (it.startsWith("-D") && it.contains(" "))
@@ -37,12 +41,15 @@ object ScriptRunner {
      * Falls back to forking when [CompiledScript.kotlinOptions] need dedicated JVM flags.
      */
     private fun runInProcess(compiled: CompiledScript, scriptArgs: List<String>): Int {
+        val restoredProps = LinkedHashMap<String, String?>()
         for (opt in compiled.kotlinOptions) {
             if (opt.startsWith("-D") && opt.contains("=")) {
                 val body = opt.removePrefix("-D")
                 val eq = body.indexOf('=')
                 if (eq > 0) {
-                    System.setProperty(body.substring(0, eq), body.substring(eq + 1))
+                    val key = body.substring(0, eq)
+                    restoredProps.putIfAbsent(key, System.getProperty(key))
+                    System.setProperty(key, body.substring(eq + 1))
                 }
             }
         }
@@ -88,6 +95,9 @@ object ScriptRunner {
             if (cause is Error) throw cause
             throw RuntimeException(cause)
         } finally {
+            for ((key, old) in restoredProps) {
+                if (old == null) System.clearProperty(key) else System.setProperty(key, old)
+            }
             if (closeLoader) {
                 try {
                     loader.close()

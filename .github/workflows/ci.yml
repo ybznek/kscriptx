@@ -54,6 +54,17 @@ jobs:
       - name: Build CLI distribution
         run: ./gradlew :cli:build --no-daemon
 
+      - name: Smoke-run hello (requires native kotlinc)
+        run: |
+          set -euo pipefail
+          if [[ -x "$HOME/.kscriptx/native-kotlinc/kotlinc-native" ]]; then
+            export KSCRIPTX_NATIVE_KOTLINC="$HOME/.kscriptx/native-kotlinc"
+            ./bin/kscriptx --no-daemon examples/hello-nodeps.kts
+            ./bin/kscriptx --no-daemon examples/hello.kts
+          else
+            echo "Skipping script smoke (native kotlinc not cached — build locally or warm cache key)."
+          fi
+
       - name: CLI performance bench
         run: ./scripts/bench.sh build/reports/perf
 

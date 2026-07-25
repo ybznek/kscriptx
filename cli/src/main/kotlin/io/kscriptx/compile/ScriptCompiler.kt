@@ -1,6 +1,8 @@
 package io.kscriptx.compile
 
 import io.kscriptx.KPaths
+import io.kscriptx.daemon.Daemon
+import io.kscriptx.exec.ScriptRunner
 import io.kscriptx.model.CompiledScript
 import io.kscriptx.model.ResolvedScript
 import io.kscriptx.resolve.DependencyResolver
@@ -34,6 +36,9 @@ object CacheStore {
         load(hash, kotlinOptions) ?: error("Compile did not produce cache entry $hash")
 
     fun clear() {
+        FastCache.clearMemory()
+        ScriptRunner.clearLoaderCache()
+        Daemon.shutdownRunning()
         if (KPaths.cache.exists()) KPaths.cache.toFile().deleteRecursively()
         if (KPaths.urlCache.exists()) KPaths.urlCache.toFile().deleteRecursively()
         val fast = KPaths.home / "fast-cache"

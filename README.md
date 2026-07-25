@@ -168,6 +168,9 @@ The daemon **server stays on the JVM** (hot classloaders, FastCache, Coursier, i
 run). Only the thin client is Rust. See “Daemon / Rust FFI notes” under Architecture
 details if you are considering moving more of the server off-heap.
 
+Scripts that call `exitProcess` / `System.exit` terminate the **daemon JVM** (not just
+that run). Use `--no-daemon` or `KSCRIPTX_DAEMON=0` for those scripts.
+
 ## Native kotlinc
 
 Bundled in Debian packages (`/usr/lib/kscriptx/native-kotlinc`) and Linux release tarballs

@@ -227,6 +227,7 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x gradlew scripts/*.sh
+          sed -i -E "s/version = \"[^\"]+\"/version = \"${VERSION}\"/" cli/build.gradle.kts
           ./scripts/package-sdkman.sh "$VERSION"
           test -f "dist/kscriptx-${VERSION}-bin.zip"
 

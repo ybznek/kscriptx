@@ -17,8 +17,6 @@ import kotlin.io.path.Path
 import kotlin.io.path.isRegularFile
 import kotlin.system.exitProcess
 
-const val VERSION = "0.1.3"
-
 fun main(args: Array<String>) {
     if (args.size == 1 && (args[0] == "--daemon-server" || args[0] == "--daemon")) {
         // Bare `--daemon` kept as alias for spawning the server process.
@@ -70,7 +68,14 @@ fun runMain(args: Array<String>, fromDaemon: Boolean): Int {
 
     val scriptSource = request.scriptSource
         ?: run {
-            System.err.println("Missing script argument")
+            val msg = when (request.mode) {
+                RunMode.IDEA -> "Missing script path for --idea"
+                RunMode.PACKAGE -> "Missing script path for --package"
+                RunMode.INTERACTIVE -> "Missing script path for --interactive"
+                RunMode.ADD_BOOTSTRAP -> "Missing script path for --add-bootstrap-header"
+                else -> "Missing script argument"
+            }
+            System.err.println(msg)
             println(ArgParser.helpText())
             return 1
         }
@@ -109,7 +114,6 @@ fun runMain(args: Array<String>, fromDaemon: Boolean): Int {
         RunMode.INTERACTIVE -> {
             val compiled = ScriptCompiler.compile(resolved)
             InteractiveRepl.start(resolved, compiled)
-            0
         }
         RunMode.PACKAGE -> {
             val compiled = ScriptCompiler.compile(resolved)
