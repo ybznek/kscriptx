@@ -171,6 +171,12 @@ details if you are considering moving more of the server off-heap.
 Scripts that call `exitProcess` / `System.exit` terminate the **daemon JVM** (not just
 that run). Use `--no-daemon` or `KSCRIPTX_DAEMON=0` for those scripts.
 
+Each daemon request receives the client’s **current working directory and full environment**
+(same as a new shell would). Script execution runs in a **child JVM** with that env so
+`System.getenv()` and relative paths match the invoking terminal; compile/cache logic uses
+the same overlay for `@Repository` `{{VAR}}` expansion and FastCache invalidation when those
+vars change.
+
 ## Native kotlinc
 
 Bundled in Debian packages (`/usr/lib/kscriptx/native-kotlinc`) and Linux release tarballs

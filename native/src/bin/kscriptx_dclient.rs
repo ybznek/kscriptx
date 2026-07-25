@@ -2,7 +2,7 @@
 //!
 //! Protocol (big-endian), shared by Unix domain sockets and TCP loopback:
 //!   str: i32 length + UTF-8 bytes
-//!   request: cwd:str, argc:i32, args:str*
+//!   request: cwd:str, envCount:i32, (key:str, value:str)*, argc:i32, args:str*
 //!   response: u8 'O'|'E'|'X'; O/E → i32 len + bytes; X → i32 exitCode
 //!
 //! Usage:
@@ -141,9 +141,19 @@ fn main() -> ExitCode {
         .and_then(|p| p.into_os_string().into_string().ok())
         .unwrap_or_default();
 
-    if write_str(&mut stream, &cwd).is_err()
-        || write_i32(&mut stream, script_args.len() as i32).is_err()
-    {
+    if write_str(&mut stream, &cwd).is_err() {
+        return ExitCode::from(1);
+    }
+    let env_vars: Vec<(String, String)> = env::vars().collect();
+    if write_i32(&mut stream, env_vars.len() as i32).is_err() {
+        return ExitCode::from(1);
+    }
+    for (k, v) in &env_vars {
+        if write_str(&mut stream, k).is_err() || write_str(&mut stream, v).is_err() {
+            return ExitCode::from(1);
+        }
+    }
+    if write_i32(&mut stream, script_args.len() as i32).is_err() {
         return ExitCode::from(1);
     }
     for a in &script_args {

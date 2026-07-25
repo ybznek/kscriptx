@@ -1,5 +1,6 @@
 package io.kscriptx.exec
 
+import io.kscriptx.ExecutionContext
 import io.kscriptx.model.CompiledScript
 import java.io.File
 import java.lang.ref.SoftReference
@@ -8,6 +9,7 @@ import java.net.URL
 import java.net.URLClassLoader
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.io.path.Path
 import kotlin.io.path.absolutePathString
 import kotlin.system.exitProcess
 
@@ -18,28 +20,34 @@ object ScriptRunner {
         val main: Method,
     )
 
-    /** Reused across daemon requests (avoids reopening dependency jars every run). */
+    /** Reused across non-forked daemon compiles only (script runs fork with client env). */
     private val loaderCache = ConcurrentHashMap<String, SoftReference<CachedEntry>>()
 
     fun clearLoaderCache() {
         loaderCache.clear()
     }
 
-    fun run(compiled: CompiledScript, scriptArgs: List<String>, workingDir: Path? = null): Int {
+    /**
+     * @param execEnv When set (daemon client environment), run in a child JVM with this exact env
+     *   and [workingDir] so `System.getenv()` / PWD match the invoking shell.
+     */
+    fun run(
+        compiled: CompiledScript,
+        scriptArgs: List<String>,
+        workingDir: Path? = null,
+        execEnv: Map<String, String>? = null,
+    ): Int {
+        val wd = workingDir ?: execEnv?.let { Path(ExecutionContext.userDir()) }
         val needsSeparateJvm = compiled.kotlinOptions.any {
             it.startsWith("-J") || (it.startsWith("-D") && it.contains(" "))
         }
-        return if (needsSeparateJvm || workingDir != null) {
-            runForked(compiled, scriptArgs, workingDir)
+        return if (execEnv != null || needsSeparateJvm || wd != null) {
+            runForked(compiled, scriptArgs, wd, execEnv)
         } else {
             runInProcess(compiled, scriptArgs)
         }
     }
 
-    /**
-     * Fast path: load script classes in-process. Avoids ~150–200ms for a second JVM.
-     * Falls back to forking when [CompiledScript.kotlinOptions] need dedicated JVM flags.
-     */
     private fun runInProcess(compiled: CompiledScript, scriptArgs: List<String>): Int {
         val restoredProps = LinkedHashMap<String, String?>()
         for (opt in compiled.kotlinOptions) {
@@ -61,30 +69,9 @@ object ScriptRunner {
             }
         }
         val urls = paths.map { File(it).toURI().toURL() }.toTypedArray()
-        val cacheKey = compiled.hash + '\u0000' + compiled.entryPoint + '\u0000' + compiled.classpath
-        val reuse = System.getProperty("KSCRIPTX_IN_DAEMON") == "1" ||
-            System.getenv("KSCRIPTX_IN_DAEMON") == "1"
-
-        val mainMethod: Method
-        val loader: URLClassLoader
-        var closeLoader = false
-        if (reuse) {
-            val cached = loaderCache[cacheKey]?.get()
-            if (cached != null && cached.urls.contentEquals(urls)) {
-                loader = cached.loader
-                mainMethod = cached.main
-            } else {
-                loader = URLClassLoader(urls, ClassLoader.getPlatformClassLoader())
-                val mainClass = Class.forName(compiled.entryPoint, true, loader)
-                mainMethod = mainClass.getMethod("main", Array<String>::class.java)
-                loaderCache[cacheKey] = SoftReference(CachedEntry(urls, loader, mainMethod))
-            }
-        } else {
-            loader = URLClassLoader(urls, ClassLoader.getPlatformClassLoader())
-            closeLoader = true
-            val mainClass = Class.forName(compiled.entryPoint, true, loader)
-            mainMethod = mainClass.getMethod("main", Array<String>::class.java)
-        }
+        val loader = URLClassLoader(urls, ClassLoader.getPlatformClassLoader())
+        val mainClass = Class.forName(compiled.entryPoint, true, loader)
+        val mainMethod = mainClass.getMethod("main", Array<String>::class.java)
 
         try {
             mainMethod.invoke(null, scriptArgs.toTypedArray())
@@ -98,16 +85,19 @@ object ScriptRunner {
             for ((key, old) in restoredProps) {
                 if (old == null) System.clearProperty(key) else System.setProperty(key, old)
             }
-            if (closeLoader) {
-                try {
-                    loader.close()
-                } catch (_: Exception) {
-                }
+            try {
+                loader.close()
+            } catch (_: Exception) {
             }
         }
     }
 
-    private fun runForked(compiled: CompiledScript, scriptArgs: List<String>, workingDir: Path?): Int {
+    private fun runForked(
+        compiled: CompiledScript,
+        scriptArgs: List<String>,
+        workingDir: Path?,
+        execEnv: Map<String, String>?,
+    ): Int {
         val cp = buildString {
             append(compiled.classesDir.absolutePathString())
             if (compiled.classpath.isNotBlank()) {
@@ -124,7 +114,7 @@ object ScriptRunner {
                 }
             }
         val cmd = buildList {
-            add(javaBinary())
+            add(javaBinary(execEnv))
             addAll(javaOpts)
             add("-cp")
             add(cp)
@@ -136,7 +126,13 @@ object ScriptRunner {
             .redirectOutput(ProcessBuilder.Redirect.INHERIT)
             .redirectError(ProcessBuilder.Redirect.INHERIT)
             .redirectInput(ProcessBuilder.Redirect.PIPE)
-        if (workingDir != null) pb.directory(workingDir.toFile())
+        if (execEnv != null) {
+            pb.environment().clear()
+            pb.environment().putAll(execEnv)
+        }
+        if (workingDir != null) {
+            pb.directory(workingDir.toFile())
+        }
         val proc = pb.start()
         Thread {
             try {
@@ -152,8 +148,9 @@ object ScriptRunner {
         return proc.waitFor()
     }
 
-    fun javaBinary(): String {
-        val home = System.getenv("JAVA_HOME")
+    fun javaBinary(env: Map<String, String>? = null): String {
+        val home = env?.get("JAVA_HOME")
+            ?: ExecutionContext.getenv("JAVA_HOME")
         if (!home.isNullOrBlank()) {
             val bin = if (isWindows()) "$home\\bin\\java.exe" else "$home/bin/java"
             if (File(bin).exists()) return bin
@@ -163,7 +160,12 @@ object ScriptRunner {
 
     private fun isWindows() = System.getProperty("os.name").lowercase().contains("win")
 
-    fun runOrExit(compiled: CompiledScript, scriptArgs: List<String>, workingDir: Path? = null) {
-        exitProcess(run(compiled, scriptArgs, workingDir))
+    fun runOrExit(
+        compiled: CompiledScript,
+        scriptArgs: List<String>,
+        workingDir: Path? = null,
+        execEnv: Map<String, String>? = null,
+    ) {
+        exitProcess(run(compiled, scriptArgs, workingDir, execEnv))
     }
 }

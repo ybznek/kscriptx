@@ -1,5 +1,6 @@
 package io.kscriptx.daemon
 
+import io.kscriptx.ExecutionContext
 import io.kscriptx.KPaths
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -38,7 +39,7 @@ import kotlin.system.exitProcess
  *
  * Wire protocol (big-endian), identical on both transports:
  *   str: i32 length + UTF-8 bytes
- *   request: cwd:str, argc:i32, args:str*
+ *   request: cwd:str, envCount:i32, (key:str, value:str)*, argc:i32, args:str*
  *   response chunks: u8 type ('O'|'E'|'X');
  *     O/E → i32 len + bytes; X → i32 exitCode
  *
@@ -115,6 +116,7 @@ object Daemon {
     private fun pingServer(): Boolean = try {
         openClientStreams()?.use { (inp, out) ->
             out.writeStr("__ping__")
+            writeEnvMap(out, emptyMap())
             out.writeInt(0)
             out.flush()
             inp.readInt() == 0
@@ -235,6 +237,7 @@ object Daemon {
         val output = DataOutputStream(rawOut)
         try {
             val cwd = input.readStr()
+            val env = input.readEnvMap()
             if (cwd == "__ping__") {
                 input.readInt() // argc 0
                 output.writeInt(0)
@@ -245,13 +248,8 @@ object Daemon {
             val argc = input.readInt()
             val args = Array(argc) { input.readStr() }
 
-            // Single-flight: System.out/err and user.dir are process-global.
-            runLock.withLock {
-                val previousDir = System.getProperty("user.dir")
-                try {
-                    if (cwd.isNotBlank()) {
-                        System.setProperty("user.dir", cwd)
-                    }
+            ExecutionContext.withContext(env, cwd) {
+                runLock.withLock {
                     val oldOut = System.out
                     val oldErr = System.err
                     val outStream = FramingPrintStream(output, 'O'.code)
@@ -260,7 +258,7 @@ object Daemon {
                     System.setErr(errStream)
                     val code = try {
                         System.setProperty("KSCRIPTX_IN_DAEMON", "1")
-                        io.kscriptx.runMain(args, fromDaemon = true)
+                        io.kscriptx.runMain(args, fromDaemon = true, clientEnv = env)
                     } catch (t: Throwable) {
                         t.printStackTrace(errStream)
                         1
@@ -274,8 +272,7 @@ object Daemon {
                     output.writeByte('X'.code)
                     output.writeInt(code)
                     output.flush()
-                } finally {
-                    System.setProperty("user.dir", previousDir)
+                    code
                 }
             }
         } catch (_: Exception) {
@@ -289,6 +286,7 @@ object Daemon {
         return try {
             openClientStreams()?.use { (inp, out) ->
                 out.writeStr(System.getProperty("user.dir") ?: "")
+                writeEnvMap(out, System.getenv())
                 out.writeInt(args.size)
                 for (a in args) out.writeStr(a)
                 out.flush()
@@ -379,6 +377,25 @@ object Daemon {
                 .start()
         } catch (_: Exception) {
         }
+    }
+}
+
+private fun DataInputStream.readEnvMap(): Map<String, String> {
+    val n = readInt()
+    if (n < 0) throw IllegalArgumentException("negative env count")
+    if (n == 0) return emptyMap()
+    val map = LinkedHashMap<String, String>(n)
+    repeat(n) {
+        map[readStr()] = readStr()
+    }
+    return map
+}
+
+private fun writeEnvMap(out: DataOutputStream, env: Map<String, String>) {
+    out.writeInt(env.size)
+    for ((k, v) in env) {
+        out.writeStr(k)
+        out.writeStr(v)
     }
 }
 

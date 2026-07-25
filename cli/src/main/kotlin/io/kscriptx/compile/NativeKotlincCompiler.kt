@@ -1,5 +1,6 @@
 package io.kscriptx.compile
 
+import io.kscriptx.ExecutionContext
 import io.kscriptx.KPaths
 import io.kscriptx.model.SourceUnit
 import java.nio.file.Files
@@ -50,7 +51,7 @@ object NativeKotlincCompiler {
 
     fun candidateRoots(): List<Path> {
         val out = linkedSetOf<Path>()
-        System.getenv("KSCRIPTX_NATIVE_KOTLINC")?.trim()?.takeIf { it.isNotEmpty() }?.let {
+        ExecutionContext.getenv("KSCRIPTX_NATIVE_KOTLINC")?.trim()?.takeIf { it.isNotEmpty() }?.let {
             out.add(Path(it))
         }
         out.add(KPaths.home / "native-kotlinc")

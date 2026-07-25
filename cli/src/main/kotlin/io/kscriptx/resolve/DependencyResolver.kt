@@ -1,5 +1,6 @@
 package io.kscriptx.resolve
 
+import io.kscriptx.ExecutionContext
 import io.kscriptx.KPaths
 import io.kscriptx.KscriptVersions
 import io.kscriptx.model.Repository as ScriptRepository
@@ -29,10 +30,10 @@ object DependencyResolver {
 
     /** Shared Maven local used by Maven and Gradle `mavenLocal()`. */
     fun userMavenLocal(): Path {
-        System.getenv("KSCRIPTX_M2")?.trim()?.takeIf { it.isNotEmpty() }?.let {
+        ExecutionContext.getenv("KSCRIPTX_M2")?.trim()?.takeIf { it.isNotEmpty() }?.let {
             return Path.of(it)
         }
-        System.getenv("MAVEN_USER_HOME")?.trim()?.takeIf { it.isNotEmpty() }?.let {
+        ExecutionContext.getenv("MAVEN_USER_HOME")?.trim()?.takeIf { it.isNotEmpty() }?.let {
             return Path.of(it) / "repository"
         }
         return Path.of(System.getProperty("user.home")) / ".m2" / "repository"

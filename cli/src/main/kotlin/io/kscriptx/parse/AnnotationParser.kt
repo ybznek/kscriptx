@@ -1,5 +1,6 @@
 package io.kscriptx.parse
 
+import io.kscriptx.ExecutionContext
 import io.kscriptx.model.Repository
 import io.kscriptx.model.ScriptConfig
 
@@ -80,7 +81,7 @@ object AnnotationParser {
     private fun resolveEnv(value: String): String {
         val re = Regex("""\{\{(\w+)\}\}""")
         return re.replace(value) { m ->
-            System.getenv(m.groupValues[1])
+            ExecutionContext.getenv(m.groupValues[1])
                 ?: error("Environment variable '${m.groupValues[1]}' required by @Repository is not set")
         }
     }

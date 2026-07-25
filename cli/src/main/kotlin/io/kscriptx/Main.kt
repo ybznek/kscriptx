@@ -46,7 +46,7 @@ fun main(args: Array<String>) {
  * Shared entry for direct JVM runs and the daemon worker.
  * @return process exit code (does not call exitProcess when [fromDaemon] is true for RUN)
  */
-fun runMain(args: Array<String>, fromDaemon: Boolean): Int {
+fun runMain(args: Array<String>, fromDaemon: Boolean, clientEnv: Map<String, String>? = null): Int {
     val request = ArgParser.parse(args)
     when (request.mode) {
         RunMode.HELP -> {
@@ -87,10 +87,14 @@ fun runMain(args: Array<String>, fromDaemon: Boolean): Int {
 
     // Fast path: unchanged file scripts skip parse/hash/config/mkdirs entirely.
     if (request.mode == RunMode.RUN && !request.textMode) {
-        val asFile = Path(scriptSource)
+        val asFile = Path(request.scriptSource).toAbsolutePath().normalize()
         if (asFile.isRegularFile()) {
             FastCache.probeFileScript(asFile, textMode = false)?.let { compiled ->
-                return ScriptRunner.run(compiled, request.scriptArgs, workingDir = null)
+                return ScriptRunner.run(
+                    compiled,
+                    request.scriptArgs,
+                    execEnv = clientEnv,
+                )
             }
         }
     }
@@ -130,7 +134,7 @@ fun runMain(args: Array<String>, fromDaemon: Boolean): Int {
                     importOrigins = resolved.sources.mapNotNull { it.origin },
                 )
             }
-            ScriptRunner.run(compiled, resolved.scriptArgs, workingDir = null)
+            ScriptRunner.run(compiled, resolved.scriptArgs, execEnv = clientEnv)
         }
         RunMode.HELP, RunMode.VERSION, RunMode.CLEAR_CACHE, RunMode.ADD_BOOTSTRAP ->
             error("Unhandled mode ${request.mode}")

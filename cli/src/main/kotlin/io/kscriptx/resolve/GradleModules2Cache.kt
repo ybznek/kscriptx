@@ -1,5 +1,6 @@
 package io.kscriptx.resolve
 
+import io.kscriptx.ExecutionContext
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -17,7 +18,7 @@ import kotlin.io.path.listDirectoryEntries
 object GradleModules2Cache {
     private val modules2: Path
         get() {
-            System.getenv("GRADLE_USER_HOME")?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            ExecutionContext.getenv("GRADLE_USER_HOME")?.trim()?.takeIf { it.isNotEmpty() }?.let {
                 return Path.of(it) / "caches" / "modules-2" / "files-2.1"
             }
             return Path.of(System.getProperty("user.home")) / ".gradle" / "caches" / "modules-2" / "files-2.1"
