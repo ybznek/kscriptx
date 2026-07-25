@@ -252,14 +252,21 @@ sockets + a worker thread (with single-flight script execution) match the worklo
 
 ## Benchmarks
 
-Compare classic **kscript** vs **kscriptx** (cold / warm / daemon) across example scripts:
+Compare classic **kscript** vs **kscriptx** across example scripts. Phases: **cold** (1st run),
+**after small change** (2nd run / recompile), **warm** (cache hit, new JVM each run), and
+**warm via daemon** (kscriptx only: thin client → already-running background JVM).
 
 ```bash
 ./gradlew :cli:build
 # classic kscript needs KOTLIN_HOME (e.g. Kotlin 1.9.x) and often a JDK ≤21
-./scripts/bench-compare.sh --kscript "$(command -v kscript)"
+KSCRIPT_JAVA_HOME="${KSCRIPT_JAVA_HOME:-$HOME/.sdkman/candidates/java/21.0.2-graalce}" \
+  ./scripts/bench-compare.sh --kscript "$(command -v kscript)"
+# all cases (incl. ffi / ktor classpath / coroutines / …):
+./scripts/bench-compare.sh --cases all
+# list catalog:
+./scripts/bench-compare.sh --list-cases
 # kscriptx-only:
-./scripts/bench-compare.sh --skip-kscript --cases hello-nodeps,hello --warm-runs 3
+./scripts/bench-compare.sh --skip-kscript --cases default --warm-runs 3
 ```
 
 Outputs under `build/reports/perf-compare/` (`compare.json`, `compare.md`), plus the Cursor
@@ -272,27 +279,73 @@ Internal CI micro-bench (kscriptx-only): `./scripts/bench.sh`.
 
 <!-- BENCH-COMPARE:START -->
 
-_Auto-generated from `scripts/bench-compare.sh` · 2026-07-24T14:30:41Z · warm median of **5** samples._
+_Generated `2026-07-25T07:48:33Z` · all times in **milliseconds (ms)** · warm columns = median of **5** samples; cold & after-change = single run._
 
-| Case | Phase | kscript (ms) | kscriptx (ms) | kscriptx daemon (ms) | Speedup |
-|---|---|---:|---:|---:|---:|
-| `hello-nodeps` | cold | 2.89s | 369 | — | 7.8× |
-| `hello-nodeps` | warm | 372 | 90 | — | 4.1× |
-| `hello-nodeps` | warm+daemon | — | — | 8 | — |
-| `hello` | cold | 3.38s | 1.00s | — | 3.4× |
-| `hello` | warm | 433 | 126 | — | 3.4× |
-| `hello` | warm+daemon | — | — | 9 | — |
-| `include` | cold | 3.09s | 415 | — | 7.4× |
-| `include` | warm | 396 | 97 | — | 4.1× |
-| `include` | warm+daemon | — | — | 8 | — |
-| `multi` | cold | 3.64s | 457 | — | 8.0× |
-| `multi` | warm | 397 | 101 | — | 3.9× |
-| `multi` | warm+daemon | — | — | 8 | — |
+| Phase | Meaning |
+|---|---|
+| **Cold (1st run)** | Empty tool cache — first resolve + compile + run (very cold). |
+| **After small change** | Second run after a tiny script edit — must recompile; dependency jars may already be warm. |
+| **Warm (new process)** | Unchanged script, cache hit. Each sample starts a **fresh JVM process**, then exits. |
+| **Warm (via daemon)** | Same cache-hit script, but kscriptx talks to an **already-running background JVM** (started once; stays hot). No JVM startup per run. Classic kscript has no equivalent. |
+
+Ratio columns show **how many times faster** the right-hand tool is (e.g. `4.0×` means about 4× faster). Formula is in the column header.
+
+### Cold (1st run, empty cache) — ms
+
+| Case | kscript (ms) | kscriptx (ms) | kscript ÷ kscriptx |
+|---|---:|---:|---:|
+| `hello-nodeps` | 2990 | 400 | 7.5× |
+| `hello` | 3581 | 1118 | 3.2× |
+| `include` | 3373 | 418 | 8.1× |
+| `multi` | 3747 | 508 | 7.4× |
+| `cpu` | 3266 | 466 | 7.0× |
+| `chatty` | 3153 | 404 | 7.8× |
+| `many-deps` | 3726 | 1257 | 3.0× |
+| `coroutines` | 4268 | 1048 | 4.1× |
+| `ktor-cp` | 2716 | 1229 | 2.2× |
+| `large` | 4034 | 490 | 8.2× |
+| `kt-file` | 2930 | 429 | 6.8× |
+
+### After small change (2nd run, recompile) — ms
+
+| Case | kscript (ms) | kscriptx (ms) | kscript ÷ kscriptx |
+|---|---:|---:|---:|
+| `hello-nodeps` | 2963 | 227 | 13.0× |
+| `hello` | 3520 | 307 | 11.5× |
+| `include` | 3132 | 265 | 11.8× |
+| `multi` | 3954 | 323 | 12.2× |
+| `cpu` | 3380 | 255 | 13.3× |
+| `chatty` | 1891 | 230 | 8.2× |
+| `many-deps` | 3625 | 384 | 9.4× |
+| `coroutines` | 3694 | 283 | 13.0× |
+| `ktor-cp` | 3672 | 317 | 11.6× |
+| `large` | 4119 | 317 | 13.0× |
+| `kt-file` | 1146 | 265 | 4.3× |
+
+### Warm cache hit (unchanged script) — ms
+
+| Case | kscript (ms) | kscriptx new process (ms) | kscriptx via daemon (ms) | kscript ÷ kscriptx | kscriptx ÷ daemon |
+|---|---:|---:|---:|---:|---:|
+| `hello-nodeps` | 384 | 90 | 7 | 4.3× | 12.0× |
+| `hello` | 445 | 133 | 8 | 3.4× | 15.9× |
+| `include` | 394 | 94 | 8 | 4.2× | 11.8× |
+| `multi` | 431 | 111 | 8 | 3.9× | 13.7× |
+| `cpu` | 387 | 95 | 8 | 4.1× | 12.5× |
+| `chatty` | 403 | 93 | 8 | 4.3× | 11.2× |
+| `many-deps` | 570 | 183 | 10 | 3.1× | 19.0× |
+| `coroutines` | 450 | 121 | 9 | 3.7× | 12.9× |
+| `ktor-cp` | 489 | 141 | 9 | 3.5× | 16.4× |
+| `large` | 431 | 107 | 8 | 4.0× | 13.0× |
+| `kt-file` | 420 | 99 | 8 | 4.2× | 12.0× |
 
 Host: `Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39` · `openjdk version "25.0.2" 2026-01-20`  
-Tools: kscript `n/a` · kscriptx `kscriptx 0.1.3` · native kotlinc=yes
+Tools: kscript `Version   : 4.2.3` · kscriptx `kscriptx 0.1.3` · native kotlinc=yes
 
-Re-run: `./scripts/bench-compare.sh` (also refreshes the Cursor canvas and this section via `scripts/gen-bench-canvas.py` + `scripts/update-readme-bench.py`).
+- **kscriptx new process** — `kscriptx --no-daemon`: start JVM, run script, exit (every sample).  
+- **kscriptx via daemon** — background `kscriptx` JVM already running; each sample is a client request over a local socket (default mode). Classic kscript has no daemon column.  
+- **kscript ÷ kscriptx** — e.g. `4.0×` means kscriptx (new process) finished in ~¼ the time of kscript.  
+- **kscriptx ÷ daemon** — e.g. `12×` means the daemon path was ~12× faster than starting a new kscriptx JVM for the same warm script.  
+Re-run: `./scripts/bench-compare.sh`.
 
 <!-- BENCH-COMPARE:END -->
 

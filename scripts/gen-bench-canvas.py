@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a Cursor canvas from bench-compare.json.
-
-Usage:
-  ./scripts/gen-bench-canvas.py [compare.json] [out.canvas.tsx]
-
-Defaults:
-  compare.json  -> build/reports/perf-compare/compare.json
-  canvas        -> $CANVAS_DIR/kscript-vs-kscriptx.canvas.tsx
-                  or ~/.cursor/projects/p-kscript3/canvases/...
-
-Re-run after every ./scripts/bench-compare.sh to refresh charts/tables.
-"""
+"""Generate a Cursor canvas from bench-compare.json."""
 from __future__ import annotations
 
 import json
@@ -31,38 +20,43 @@ def default_canvas() -> Path:
     env = os.environ.get("CANVAS_DIR")
     if env:
         return Path(env) / "kscript-vs-kscriptx.canvas.tsx"
-    candidates = [
+    for c in (
         Path.home() / ".cursor" / "projects" / "p-kscript3" / "canvases",
         Path("/home/z/.cursor/projects/p-kscript3/canvases"),
-    ]
-    for c in candidates:
+    ):
         if c.is_dir():
             return c / "kscript-vs-kscriptx.canvas.tsx"
     return repo_root() / "build" / "reports" / "perf-compare" / "kscript-vs-kscriptx.canvas.tsx"
 
 
-def fmt_ms(v: float | None) -> str:
+def ms(v: float | None) -> str:
     if v is None:
-        return "—"
-    if v >= 1000:
-        return f"{v / 1000:.2f}s"
-    return f"{v:.0f} ms"
+        return "fail"
+    return str(int(round(v)))
 
 
-def speedup(a: float | None, b: float | None) -> str:
+def ratio(a: float | None, b: float | None) -> str:
     if a is None or b is None or b == 0:
-        return "—"
-    return f"{a / b:.2f}×"
+        return "fail"
+    return f"{a / b:.1f}×"
 
 
 def j(s: object) -> str:
     return json.dumps(s, ensure_ascii=False)
 
 
+def phase(r: dict, name: str) -> dict:
+    return (r.get("phases") or {}).get(name) or {}
+
+
+def num(v: float | None) -> float:
+    return float(v) if v is not None else 0.0
+
+
 def build_tsx(doc: dict) -> str:
     results = doc.get("results") or []
     if not results:
-        raise SystemExit("compare.json has no results — run scripts/bench-compare.sh first")
+        raise SystemExit("compare.json has no results")
 
     tools = doc.get("tools") or {}
     ks = tools.get("kscript") or {}
@@ -70,73 +64,92 @@ def build_tsx(doc: dict) -> str:
     host = doc.get("host") or {}
     phases_help = doc.get("phases_help") or {}
 
-    categories: list[str] = []
-    series_ks: list[float] = []
-    series_kx: list[float] = []
-    series_daemon: list[float] = []
-    table_rows: list[list[str]] = []
+    case_ids: list[str] = []
+    warm_ks: list[float] = []
+    warm_kx: list[float] = []
+    warm_daemon: list[float] = []
+    cold_ks: list[float] = []
+    cold_kx: list[float] = []
+    after_ks: list[float] = []
+    after_kx: list[float] = []
+    warm_rows: list[list[str]] = []
+    cold_rows: list[list[str]] = []
+    after_rows: list[list[str]] = []
     desc_rows: list[list[str]] = []
-
-    best_warm_speedup: float | None = None
-    median_warm_kx: list[float] = []
+    best_warm: float | None = None
+    warm_kx_vals: list[float] = []
+    failures: list[list[str]] = []
 
     for r in results:
         rid = r.get("id", "?")
-        label = r.get("label", rid)
-        desc_rows.append([rid, label, r.get("script", ""), r.get("description", "")])
-        phases = r.get("phases") or {}
-        for phase, pname in (("cold", "cold"), ("warm", "warm"), ("warm_daemon", "daemon")):
-            p = phases.get(phase) or {}
-            ks_ms = p.get("kscript_ms")
-            kx_ms = p.get("kscriptx_ms")
-            if phase == "warm_daemon":
-                categories.append(f"{rid} / daemon")
-                series_ks.append(0.0)
-                series_kx.append(0.0)
-                series_daemon.append(float(kx_ms) if kx_ms is not None else 0.0)
-                table_rows.append([rid, "warm + daemon", "—", "—", fmt_ms(kx_ms), "—"])
-            else:
-                categories.append(f"{rid} / {pname}")
-                series_ks.append(float(ks_ms) if ks_ms is not None else 0.0)
-                series_kx.append(float(kx_ms) if kx_ms is not None else 0.0)
-                series_daemon.append(0.0)
-                table_rows.append(
-                    [rid, pname, fmt_ms(ks_ms), fmt_ms(kx_ms), "—", speedup(ks_ms, kx_ms)]
-                )
-                if phase == "warm" and ks_ms and kx_ms:
-                    sp = ks_ms / kx_ms
-                    if best_warm_speedup is None or sp > best_warm_speedup:
-                        best_warm_speedup = sp
-                if phase == "warm" and kx_ms is not None:
-                    median_warm_kx.append(float(kx_ms))
+        desc_rows.append([rid, r.get("label", rid), r.get("script", ""), r.get("description", "")])
+        cold = phase(r, "cold")
+        after = phase(r, "after_change")
+        warm = phase(r, "warm")
+        daemon = phase(r, "warm_daemon")
+        ks_c, kx_c = cold.get("kscript_ms"), cold.get("kscriptx_ms")
+        ks_a, kx_a = after.get("kscript_ms"), after.get("kscriptx_ms")
+        ks_w, kx_w = warm.get("kscript_ms"), warm.get("kscriptx_ms")
+        kx_d = daemon.get("kscriptx_ms")
 
-    warm_kx_avg = sum(median_warm_kx) / len(median_warm_kx) if median_warm_kx else None
-    cases_n = len(results)
-    generated = doc.get("generated_at", "")
-    warm_runs = doc.get("warm_runs", "?")
-    best_stat = f"{best_warm_speedup:.2f}×" if best_warm_speedup is not None else "—"
-    avg_stat = fmt_ms(warm_kx_avg)
+        case_ids.append(rid)
+        warm_ks.append(num(ks_w))
+        warm_kx.append(num(kx_w))
+        warm_daemon.append(num(kx_d))
+        cold_ks.append(num(ks_c))
+        cold_kx.append(num(kx_c))
+        after_ks.append(num(ks_a))
+        after_kx.append(num(kx_a))
 
-    phase_help_rows = [[k, v] for k, v in phases_help.items()]
-    ks_path = ks.get("path") or "(skipped)"
-    ks_ver = ks.get("version") or "n/a"
-    kx_path = kx.get("path") or ""
-    kx_ver = kx.get("version") or "n/a"
+        warm_rows.append(
+            [rid, ms(ks_w), ms(kx_w), ms(kx_d), ratio(ks_w, kx_w), ratio(kx_w, kx_d)]
+        )
+        cold_rows.append([rid, ms(ks_c), ms(kx_c), ratio(ks_c, kx_c)])
+        after_rows.append([rid, ms(ks_a), ms(kx_a), ratio(ks_a, kx_a)])
+
+        if ks_w and kx_w:
+            sp = ks_w / kx_w
+            if best_warm is None or sp > best_warm:
+                best_warm = sp
+        if kx_w is not None:
+            warm_kx_vals.append(float(kx_w))
+        if r.get("error") or None in (ks_c, kx_c, ks_a, kx_a, ks_w, kx_w, kx_d):
+            missing = []
+            for label, val in (
+                ("kscript cold", ks_c),
+                ("kscriptx cold", kx_c),
+                ("kscript after_change", ks_a),
+                ("kscriptx after_change", kx_a),
+                ("kscript warm", ks_w),
+                ("kscriptx warm", kx_w),
+                ("daemon", kx_d),
+            ):
+                if val is None:
+                    missing.append(label)
+            failures.append([rid, r.get("error") or ("missing: " + ", ".join(missing))])
+
+    avg_warm = sum(warm_kx_vals) / len(warm_kx_vals) if warm_kx_vals else None
     footer = (
-        "Host: "
-        + str(host.get("os", "unknown"))
-        + " · "
-        + str(host.get("java_version", "unknown"))
-        + " · kscript: "
-        + str(ks_path)
-        + " ("
-        + str(ks_ver)
-        + ") · kscriptx: "
-        + str(kx_path)
-        + " ("
-        + str(kx_ver)
-        + ")"
+        f"Host: {host.get('os', '?')} · {host.get('java_version', '?')} · "
+        f"kscript: {(ks.get('version') or 'n/a').strip()} · "
+        f"kscriptx: {kx.get('version') or 'n/a'}"
     )
+
+    phase_rows = [[k, v] for k, v in phases_help.items()] or [
+        ["cold", "First run, very cold (empty tool cache)."],
+        ["after_change", "Second run after a tiny script edit (recompile)."],
+        ["warm", "Unchanged script, cache hit, new process."],
+        ["warm_daemon", "Cache hit via kscriptx persistent JVM daemon."],
+    ]
+
+    fail_block = ""
+    if failures:
+        fail_block = f"""
+      <Stack gap={{8}}>
+        <H2>Failures</H2>
+        <Table headers={{["Case", "Detail"]}} rows={{{j(failures)}}} />
+      </Stack>
+"""
 
     return f"""\
 import {{
@@ -155,20 +168,21 @@ import {{
   Text,
 }} from "cursor/canvas";
 
-/**
- * Auto-generated by scripts/gen-bench-canvas.py — do not edit by hand.
- * Refresh: ./scripts/bench-compare.sh
- *      or: ./scripts/gen-bench-canvas.py build/reports/perf-compare/compare.json
- */
-const GENERATED_AT = {j(generated)};
-const WARM_RUNS = {j(str(warm_runs))};
-const CATEGORIES = {j(categories)};
-const SERIES_KSCRIPT = {j(series_ks)};
-const SERIES_KSCRIPTX = {j(series_kx)};
-const SERIES_DAEMON = {j(series_daemon)};
-const RESULT_ROWS = {j(table_rows)};
+const GENERATED_AT = {j(doc.get("generated_at", ""))};
+const WARM_RUNS = {j(str(doc.get("warm_runs", "?")))};
+const CASE_IDS = {j(case_ids)};
+const WARM_KSCRIPT = {j(warm_ks)};
+const WARM_KSCRIPTX = {j(warm_kx)};
+const WARM_DAEMON = {j(warm_daemon)};
+const COLD_KSCRIPT = {j(cold_ks)};
+const COLD_KSCRIPTX = {j(cold_kx)};
+const AFTER_KSCRIPT = {j(after_ks)};
+const AFTER_KSCRIPTX = {j(after_kx)};
+const WARM_ROWS = {j(warm_rows)};
+const COLD_ROWS = {j(cold_rows)};
+const AFTER_ROWS = {j(after_rows)};
 const CASE_ROWS = {j(desc_rows)};
-const PHASE_ROWS = {j(phase_help_rows)};
+const PHASE_ROWS = {j(phase_rows)};
 
 export default function KscriptVsKscriptxBench() {{
   return (
@@ -176,79 +190,105 @@ export default function KscriptVsKscriptxBench() {{
       <Stack gap={{6}}>
         <H1>kscript vs kscriptx</H1>
         <Text tone="secondary">
-          Wall-clock script run times (resolve + compile + execute). Warm values are
-          the median of {{WARM_RUNS}} samples. Source: scripts/bench-compare.sh · {{GENERATED_AT}}
+          All times in milliseconds (ms). Warm columns = median of {{WARM_RUNS}} samples;
+          cold and after-change are single runs. “Via daemon” = already-running background JVM.
+          {{GENERATED_AT}}
         </Text>
       </Stack>
 
       <Grid columns={{4}} gap={{16}}>
-        <Stat value={j(str(cases_n))} label="Cases measured" />
-        <Stat value={j(best_stat)} label="Best warm speedup (kscript / kscriptx)" tone="success" />
-        <Stat value={j(avg_stat)} label="Avg warm kscriptx" />
+        <Stat value={j(str(len(results)))} label="Cases" />
+        <Stat value={j(f"{best_warm:.1f}×" if best_warm else "fail")} label="Best warm speedup" tone="success" />
+        <Stat value={j(ms(avg_warm))} label="Avg warm kscriptx (ms)" />
         <Stat value={j("yes" if kx.get("native_kotlinc") else "no")} label="Native kotlinc" />
       </Grid>
 
       <Card>
-        <CardHeader>Latency by case and phase (ms)</CardHeader>
+        <CardHeader>Warm cache hit (ms)</CardHeader>
         <CardBody>
           <BarChart
-            categories={{CATEGORIES}}
+            categories={{CASE_IDS}}
             series={{[
-              {{ name: "kscript", data: SERIES_KSCRIPT, tone: "neutral" }},
-              {{ name: "kscriptx (no daemon)", data: SERIES_KSCRIPTX, tone: "info" }},
-              {{ name: "kscriptx daemon", data: SERIES_DAEMON, tone: "success" }},
+              {{ name: "kscript", data: WARM_KSCRIPT, tone: "neutral" }},
+              {{ name: "kscriptx", data: WARM_KSCRIPTX, tone: "info" }},
+              {{ name: "kscriptx via daemon", data: WARM_DAEMON, tone: "success" }},
             ]}}
-            height={{320}}
+            height={{280}}
             beginAtZero
           />
-          <Text tone="tertiary" size="small">
-            Y-axis: wall time (ms). A zero bar means that series was not measured for
-            the category (daemon is kscriptx-only; classic kscript has no daemon).
-          </Text>
         </CardBody>
       </Card>
 
       <Stack gap={{8}}>
-        <H2>Timing table</H2>
+        <H2>Warm cache hit (ms)</H2>
         <Table
-          headers={{["Case", "Phase", "kscript", "kscriptx", "kscriptx daemon", "Speedup"]}}
-          columnAlign={{["left", "left", "right", "right", "right", "right"]}}
-          rows={{RESULT_ROWS}}
+          headers={{["Case", "kscript (ms)", "kscriptx new process (ms)", "kscriptx via daemon (ms)", "kscript ÷ kscriptx", "kscriptx ÷ daemon"]}}
+          columnAlign={{["left", "right", "right", "right", "right", "right"]}}
+          rows={{WARM_ROWS}}
           striped
           stickyHeader
         />
         <Text tone="tertiary" size="small">
-          Speedup = kscript_ms / kscriptx_ms for the same phase (higher means kscriptx is faster).
+          New process = start a fresh JVM each run (--no-daemon). Via daemon = talk to an
+          already-running background JVM (default). Ratio = left ÷ right (higher means faster right-hand path).
         </Text>
       </Stack>
 
+      <Card>
+        <CardHeader>Cold (1st run) vs after small change (ms)</CardHeader>
+        <CardBody>
+          <BarChart
+            categories={{CASE_IDS}}
+            series={{[
+              {{ name: "kscript cold", data: COLD_KSCRIPT, tone: "neutral" }},
+              {{ name: "kscriptx cold", data: COLD_KSCRIPTX, tone: "info" }},
+              {{ name: "kscript after change", data: AFTER_KSCRIPT, tone: "warning" }},
+              {{ name: "kscriptx after change", data: AFTER_KSCRIPTX, tone: "success" }},
+            ]}}
+            height={{280}}
+            beginAtZero
+          />
+        </CardBody>
+      </Card>
+
       <Stack gap={{8}}>
-        <H2>What each case measures</H2>
+        <H2>Cold (1st run, empty cache) — ms</H2>
         <Table
-          headers={{["Id", "Label", "Script", "Description"]}}
-          rows={{CASE_ROWS}}
+          headers={{["Case", "kscript (ms)", "kscriptx (ms)", "kscript ÷ kscriptx"]}}
+          columnAlign={{["left", "right", "right", "right"]}}
+          rows={{COLD_ROWS}}
           striped
+          stickyHeader
         />
       </Stack>
 
       <Stack gap={{8}}>
-        <H2>Phase definitions</H2>
+        <H2>After small change (2nd run, recompile) — ms</H2>
         <Table
-          headers={{["Phase", "Meaning"]}}
-          rows={{PHASE_ROWS}}
+          headers={{["Case", "kscript (ms)", "kscriptx (ms)", "kscript ÷ kscriptx"]}}
+          columnAlign={{["left", "right", "right", "right"]}}
+          rows={{AFTER_ROWS}}
+          striped
+          stickyHeader
         />
       </Stack>
+{fail_block}
+      <Stack gap={{8}}>
+        <H2>Cases</H2>
+        <Table headers={{["Id", "Label", "Script", "Description"]}} rows={{CASE_ROWS}} striped />
+      </Stack>
 
-      <Callout tone="info" title="How to re-run">
-        ./scripts/bench-compare.sh writes compare.json + compare.md and refreshes this canvas
-        via scripts/gen-bench-canvas.py. Use --kscript PATH, --skip-kscript, --cases id1,id2,
-        or --warm-runs N as needed.
+      <Stack gap={{8}}>
+        <H2>Phases</H2>
+        <Table headers={{["Phase", "Meaning"]}} rows={{PHASE_ROWS}} />
+      </Stack>
+
+      <Callout tone="info" title="Re-run">
+        ./scripts/bench-compare.sh --cases default
       </Callout>
 
       <Divider />
-      <Text tone="tertiary" size="small">
-        {j(footer)}
-      </Text>
+      <Text tone="tertiary" size="small">{j(footer)}</Text>
     </Stack>
   );
 }}
@@ -258,13 +298,10 @@ export default function KscriptVsKscriptxBench() {{
 def main() -> None:
     json_path = Path(sys.argv[1]) if len(sys.argv) > 1 else default_json()
     out_path = Path(sys.argv[2]) if len(sys.argv) > 2 else default_canvas()
-
     if not json_path.is_file():
-        raise SystemExit(f"Missing {json_path}. Run ./scripts/bench-compare.sh first.")
-
-    doc = json.loads(json_path.read_text(encoding="utf-8"))
+        raise SystemExit(f"Missing {json_path}")
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(build_tsx(doc), encoding="utf-8")
+    out_path.write_text(build_tsx(json.loads(json_path.read_text(encoding="utf-8"))), encoding="utf-8")
     print(f"Wrote {out_path}")
 
 
