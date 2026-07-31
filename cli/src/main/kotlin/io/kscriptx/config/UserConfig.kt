@@ -13,7 +13,6 @@ data class UserConfig(
     val repositoryUrl: String? = null,
     val repositoryUser: String? = null,
     val repositoryPassword: String? = null,
-    val artifactsDir: String? = null,
 ) {
     fun asScriptConfig(): ScriptConfig {
         val repos = if (!repositoryUrl.isNullOrBlank()) {
@@ -38,7 +37,6 @@ data class UserConfig(
                 repositoryUrl = props.getProperty("scripting.repository.url"),
                 repositoryUser = props.getProperty("scripting.repository.user"),
                 repositoryPassword = props.getProperty("scripting.repository.password"),
-                artifactsDir = props.getProperty("scripting.directory.artifacts"),
             )
         }
     }

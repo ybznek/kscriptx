@@ -5,4 +5,6 @@ object KscriptVersions {
     const val KOTLIN = "2.4.10"
     /** Used only by `--idea` generated Gradle projects. */
     const val GRADLE = "9.6.1"
+    /** Bytecode / java compatibility target for script compiles and IDEA projects. */
+    const val JVM = "17"
 }

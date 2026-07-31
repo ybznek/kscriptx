@@ -41,7 +41,7 @@ object AnnotationParser {
     private fun parseAnnotation(name: String, argsRaw: String): ScriptConfig {
         val args = splitArgs(argsRaw)
         return when (name) {
-            "DependsOn", "file:DependsOn" -> ScriptConfig(dependencies = args)
+            "DependsOn" -> ScriptConfig(dependencies = args)
             "DependsOnMaven" -> ScriptConfig(dependencies = args.take(1))
             "Repository" -> {
                 val named = namedArg.findAll(argsRaw).associate { m ->
@@ -78,11 +78,9 @@ object AnnotationParser {
         return extractStringLiterals(raw)
     }
 
-    private fun resolveEnv(value: String): String {
-        val re = Regex("""\{\{(\w+)\}\}""")
-        return re.replace(value) { m ->
+    private fun resolveEnv(value: String): String =
+        ExecutionContext.envVarPattern.replace(value) { m ->
             ExecutionContext.getenv(m.groupValues[1])
                 ?: error("Environment variable '${m.groupValues[1]}' required by @Repository is not set")
         }
-    }
 }

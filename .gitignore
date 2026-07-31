@@ -23,3 +23,6 @@ native/target/
 !gradle/wrapper/gradle-wrapper.jar
 !cli/src/main/resources/**/*.jar
 !scripts/native-kotlinc/**/*.jar
+
+# Built launcher / native helpers (sources live under native/src/bin)
+bin/

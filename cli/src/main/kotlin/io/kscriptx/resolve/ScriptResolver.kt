@@ -1,5 +1,6 @@
 package io.kscriptx.resolve
 
+import io.kscriptx.ExecutionContext
 import io.kscriptx.KPaths
 import io.kscriptx.config.UserConfig
 import io.kscriptx.model.*
@@ -26,6 +27,12 @@ object ScriptResolver {
         |}
     """.trimMargin()
 
+    private fun absoluteFromUserDir(spec: String): Path {
+        val raw = Path(spec)
+        if (raw.isAbsolute) return raw.normalize()
+        val base = ExecutionContext.userDir().ifBlank { System.getProperty("user.dir") ?: "." }
+        return Path(base).resolve(raw).toAbsolutePath().normalize()
+    }
     fun resolve(
         source: String,
         scriptArgs: List<String>,
@@ -101,7 +108,7 @@ object ScriptResolver {
                 return Loaded(ScriptKind.INLINE, "inline.kts", null, source)
             }
             else -> {
-                val path = Path(source).toAbsolutePath().normalize()
+                val path = absoluteFromUserDir(source)
                 require(path.exists()) { "Script not found: $source" }
                 val name = path.fileName.toString()
                 return Loaded(kindForName(name), name, path, path.readText())
@@ -129,7 +136,7 @@ object ScriptResolver {
     }
 
     private fun pathExistsSafe(s: String): Boolean = try {
-        Files.exists(Path(s))
+        Files.exists(absoluteFromUserDir(s))
     } catch (_: Exception) {
         false
     }
@@ -173,7 +180,7 @@ object ScriptResolver {
         val path = when {
             Path(spec).isAbsolute -> Path(spec)
             baseDir != null -> (baseDir / spec).normalize()
-            else -> Path(spec).toAbsolutePath().normalize()
+            else -> absoluteFromUserDir(spec)
         }
         require(path.exists()) { "Imported file not found: $spec (resolved to $path)" }
         return SourceUnit(path.fileName.toString(), path.readText(), path)

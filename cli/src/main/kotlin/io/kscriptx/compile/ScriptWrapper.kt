@@ -5,7 +5,7 @@ import io.kscriptx.model.ScriptKind
 import io.kscriptx.model.SourceUnit
 
 /**
- * Turns .kts script bodies into compilable Kotlin sources for the JVM Gradle toolchain.
+ * Turns .kts script bodies into compilable Kotlin sources for the JVM toolchain.
  * Official kotlin-main-kts style top-level statements become `fun main(args: Array<String>)`.
  */
 object ScriptWrapper {
@@ -24,7 +24,7 @@ object ScriptWrapper {
             if (index == 0) {
                 SourceUnit(
                     fileName = "Script.kt",
-                    content = wrapRoot(unit.content, script.config.entryPoint),
+                    content = wrapRoot(unit.content),
                     origin = unit.origin,
                 )
             } else {
@@ -41,10 +41,10 @@ object ScriptWrapper {
         )
     }
 
-    private fun wrapRoot(body: String, entryPoint: String?): String {
-        // If user already defined main, keep body
+    private fun wrapRoot(body: String): String {
+        // If user already defined main, keep body as-is.
         if (Regex("""fun\s+main\s*\(""").containsMatchIn(body)) {
-            return ensurePackageFree(body)
+            return body
         }
         val (pkg, imports, rest) = splitHeader(body)
         return buildString {
@@ -56,10 +56,6 @@ object ScriptWrapper {
                 append("    ").appendLine(line)
             }
             appendLine("}")
-            // entryPoint annotation is handled at runtime via KS_ENTRY
-            if (entryPoint != null) {
-                // no-op: documented for kt files
-            }
         }
     }
 
@@ -112,8 +108,6 @@ object ScriptWrapper {
         }
         return Triple(pkg, imports, lines.drop(i).joinToString("\n"))
     }
-
-    private fun ensurePackageFree(body: String): String = body
 
     private fun sanitizeName(name: String): String {
         val base = name.substringAfterLast('/').substringAfterLast('\\')

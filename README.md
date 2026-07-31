@@ -1,7 +1,8 @@
 # kscriptx
 
 Kotlin scripting with **kscript feature parity**: Coursier for dependencies, GraalVM
-**native kotlinc** for compiles, content-addressed caching, and in-process script execution.
+**native kotlinc** for compiles, content-addressed caching, and a compile daemon
+with client-side script JVM launch.
 
 Successor to [kscript](https://github.com/kscripting/kscript). Gradle is used only to **build kscriptx** and for optional `--idea`
 projects — not on the script hot path.
@@ -103,12 +104,27 @@ kscriptx [options] <script> [args...]
 |------|---------|
 | `-t` / `--text` | Text-processing mode (`lines` + kscript support API) |
 | `--idea` | Generate a Gradle/IntelliJ project and open it |
-| `--package` | Fat-jar + launcher next to the script |
+| `--jar` / `--standalone-jar` | Standalone fat/uber jar only (`java -jar`; no launcher) |
+| `--package` | Same fat jar **plus** a shell/cmd launcher next to the script |
+| `--native` | GraalVM native-image **executable** next to the script (keeps fat jar) |
+| `--native-shared` | GraalVM **shared library** (`lib<stem>.so` / `.dylib` / `.dll`) + helper |
+| `--native-runner` | Shared lib + thin **C runner** (`<stem>-runner`); implies `--native-shared` |
+| `--native-config-dir <dir>` | Reachability metadata for `native-image` |
+| `--native-image-arg <arg>` | Extra `native-image` flag (repeatable) |
+| `--graalvm-home <path>` | GraalVM home for native builds (else `GRAALVM_HOME` / PATH / SDKMAN) |
+| `--proguard` | Shrink/optimize the fat jar with ProGuard |
+| `--proguard-home <path>` | ProGuard home for `--proguard` (else `PROGUARD_HOME` / PATH) |
+| `--proguard-jar <path>` | Explicit `proguard.jar` (else `PROGUARD_JAR`) |
+| `--compile-beside` | Mirror compile artifacts next to the script (`<stem>.kscriptx/`) |
 | `--interactive` | REPL with script classpath |
 | `--clear-cache` | Wipe compile + URL caches |
 | `--add-bootstrap-header` | Embed self-bootstrap shebang |
 | `-h` / `--help` | Help |
 | `-v` / `--version` | Version |
+
+`--jar` and `--package` both produce a **standalone fat jar** (deps + `Main-Class`,
+runnable with `java -jar <stem>.jar`). Prefer `--jar` when you only want the jar;
+use `--package` when you also want the convenience launcher.
 
 ### Annotations
 
@@ -135,10 +151,136 @@ kscriptx examples/ffi-libc.kts            # Panama FFM → glibc (Linux, JDK 22+
 kscriptx examples/gtk4-hello.kts          # Panama FFM → GTK4 window (Linux)
 # headless GTK check: xvfb-run -a kscriptx examples/gtk4-hello.kts --self-test
 kscriptx --idea examples/hello.kts
-kscriptx --package examples/hello.kts
+kscriptx --jar examples/hello.kts              # standalone fat jar only
+kscriptx --standalone-jar examples/hello.kts   # alias for --jar
+kscriptx --package examples/hello.kts          # fat jar + launcher
+kscriptx --compile-beside --jar examples/hello.kts
+kscriptx --proguard --jar examples/hello.kts   # ProGuard, jar only (needs ProGuard)
+kscriptx --proguard --proguard-home "$PROGUARD_HOME" examples/hello.kts
+kscriptx --proguard --native examples/hello.kts  # ProGuard then native-image
+kscriptx --native examples/hello.kts           # needs GraalVM native-image
+kscriptx --package --native examples/hello.kts # jar + .native + smart launcher
+kscriptx --native --graalvm-home "$GRAALVM_HOME" examples/hello.kts
+kscriptx --native-shared examples/hello.kts    # shared library + JVM/C helper
+kscriptx --native-shared --native-runner examples/hello.kts
+kscriptx --native --native-config-dir=./ni-config examples/hello.kts
+kscriptx --native --native-image-arg=-O2 examples/hello.kts
 echo 'println("piped")' | kscriptx -
 ./examples/run_now.kts
 ```
+
+### Standalone fat jar (`--jar` / `--standalone-jar`)
+
+Builds an uber jar next to the script:
+
+```text
+examples/hello.jar          # java -jar examples/hello.jar
+```
+
+With `--compile-beside`, the same jar is also copied into the beside tree:
+
+```text
+examples/hello.kscriptx/hello.jar
+```
+
+`--package` writes that same fat jar **and** a launcher (`examples/hello` /
+`examples/hello.cmd`). `--proguard` / `--native` always build the fat jar first.
+
+**Pipeline:** compile → fat jar → optional ProGuard → optional `--native-shared` →
+optional `--native` → launcher (`--package`, bare `--proguard` without `--jar`,
+or smart wrapper when `--package --native`).
+
+### Packaging mode matrix
+
+| Flags | Artifacts |
+|-------|-----------|
+| `--jar` | `<stem>.jar` |
+| `--package` | `<stem>.jar` + JVM launcher `<stem>` |
+| `--native` | `<stem>.jar` + native executable `<stem>` |
+| `--package --native` | `<stem>.jar` + `<stem>.native` + smart `<stem>` (prefer native, else `java -jar`) |
+| `--native-shared` | `lib<stem>.{so,dylib}` / `<stem>.dll` + header + `<stem>-shared` helper + loader jar |
+| `--native-runner` | above + `<stem>-runner` (C, `dlopen`/link + isolate lifecycle) |
+
+### Compile beside the script
+
+With `--compile-beside`, kscriptx still uses the global content cache under
+`$KSCRIPTX_DIRECTORY` (default `~/.kscriptx`), and **also** mirrors the compile
+output next to the script file:
+
+```text
+examples/hello.kts
+examples/hello.kscriptx/
+  classes/      # .class files
+  classpath     # dependency classpath
+  entry         # main class (e.g. ScriptKt)
+  ok
+  hello.jar     # when also packaging (--jar / --package / --proguard / --native)
+```
+
+Requires a file script (not stdin / bare inline). Default behavior is unchanged
+when the flag is omitted.
+
+### ProGuard packaging (`--proguard`)
+
+`--proguard` builds the usual fat jar, then runs ProGuard with a curated
+Kotlin-safe config and replaces the jar in place. Pair with `--jar` for
+jar-only output, or omit `--jar` to also write the `--package`-style launcher.
+Resolution order for ProGuard:
+
+1. `--proguard-jar` / `--proguard-jar=<path>`
+2. `--proguard-home` / `--proguard-home=<path>` (`lib/proguard.jar` or `proguard.jar`)
+3. `PROGUARD_JAR`
+4. `PROGUARD_HOME`
+5. `proguard` / `proguard.sh` on `PATH` (jar beside the script / parent `lib/`)
+
+If ProGuard cannot be found, kscriptx **fails with an error** (same style as
+`--native`). Safe defaults keep the main entry, Kotlin metadata / annotations /
+Signature attributes, `META-INF/services`, and coroutine field names; they avoid
+`-overloadaggressively`, package repacking, and class merging.
+
+**Pipeline when combining flags:** compile → fat jar → ProGuard (if `--proguard`) →
+native-image (if `--native`) → launcher when `--package` or bare `--proguard`
+without `--jar`.
+
+**Limits:** Aggressive dependency graphs or heavy reflection may still need
+extra keep rules (not configurable yet). Real ProGuard must be installed
+separately; CI tests do not download it.
+
+### Native packaging (`--native` / `--native-shared`)
+
+`--native` builds the usual fat jar, then runs GraalVM `native-image` and writes a
+native **executable**. Alone it uses the basename `<stem>` (same as `--package`).
+Combined with `--package`, the native binary is `<stem>.native` and `<stem>` is a
+**smart launcher** that prefers the native binary, else `java -jar <stem>.jar`.
+
+`--native-shared` builds a GraalVM **shared library** with a generated
+`@CEntryPoint` bridge (`kscriptx_create_isolate` / `kscriptx_run` /
+`kscriptx_tear_down_isolate`) so scripts need no annotations. Add
+`--native-runner` to compile a thin C runner (`cc`) that creates an isolate,
+invokes the script, and tears down. The `<stem>-shared` helper prefers the C
+runner when present, else attempts the JVM loader jar.
+
+**Reachability / extra flags (Phase 3):**
+
+- `--native-config-dir <dir>` → `-H:ConfigurationFileDirectories=<dir>`
+- `--native-image-arg <arg>` → appended to every `native-image` invocation (repeatable)
+
+Resolution order for GraalVM:
+
+1. `--graalvm-home` / `--graalvm-home=<path>`
+2. `GRAALVM_HOME`
+3. Newest SDKMAN `*-graalce` / `*-graal` with `bin/native-image`
+4. `native-image` on `PATH`
+
+If `native-image` cannot be found, kscriptx **fails with an error** (it does not
+silently fall back to the JVM launcher). `--native-runner` also needs a C
+compiler (`cc` / `clang` / `gcc`) on `PATH`.
+
+**Limits:** AOT constraints apply (reflection / resources may need reachability
+metadata — use `--native-config-dir`). Large dependency sets make analysis slow
+and binaries large. On Windows, GraalVM `native-image` typically needs MSVC.
+Prefer Linux/macOS or WSL. The HotSpot loader jar can `System.load` the shared
+lib for tooling; full isolate argv marshalling is supported via the C runner.
 
 ## Architecture
 
@@ -161,21 +303,24 @@ Disable the daemon for a single script (including shebang):
 
 Or `KSCRIPTX_DAEMON=0`. The launcher talks to the daemon via a small Rust helper
 (`bin/kscriptx-dclient`): **Unix domain socket** on Linux/macOS (`$home/daemon/sock`),
-TCP loopback fallback on Windows or if UDS bind fails. Script runs are **single-flight**
-inside the daemon so `System.out` / `System.err` / `user.dir` do not cross-talk.
+TCP loopback fallback on Windows or if UDS bind fails.
 
-The daemon **server stays on the JVM** (hot classloaders, FastCache, Coursier, in-process
-run). Only the thin client is Rust. See “Daemon / Rust FFI notes” under Architecture
+The daemon **only compiles** (and keeps caches warm). The **script JVM is started by
+the original client** (`kscriptx-dclient` `exec`s `java`, or the JVM CLI forks it).
+Killing that client/script PID therefore kills the script process — not a child
+hidden inside the daemon. Concurrent compiles are allowed (no single-flight run lock).
+
+The daemon **server stays on the JVM** (hot classloaders, FastCache, Coursier).
+Only the thin client is Rust. See “Daemon / Rust FFI notes” under Architecture
 details if you are considering moving more of the server off-heap.
 
-Scripts that call `exitProcess` / `System.exit` terminate the **daemon JVM** (not just
-that run). Use `--no-daemon` or `KSCRIPTX_DAEMON=0` for those scripts.
+Scripts that call `exitProcess` / `System.exit` terminate **only their own script JVM**
+(when started via the daemon path). Use `--no-daemon` if you need a fully isolated
+one-shot CLI without a background compile daemon.
 
 Each daemon request receives the client’s **current working directory and full environment**
-(same as a new shell would). Script execution runs in a **child JVM** with that env so
-`System.getenv()` and relative paths match the invoking terminal; compile/cache logic uses
-the same overlay for `@Repository` `{{VAR}}` expansion and FastCache invalidation when those
-vars change.
+(same as a new shell would). Compile/cache logic uses that overlay for `@Repository`
+`{{VAR}}` expansion and FastCache invalidation when those vars change.
 
 ## Native kotlinc
 
@@ -270,14 +415,15 @@ owns lifecycle/IPC).
 
 | Piece | Language today | Move to Rust + FFI? |
 |---|---|---|
-| Script run / classloaders / FastCache | JVM | **No** — this *is* the product of the daemon |
+| Compile / FastCache / Coursier | JVM (daemon) | **No** — warm compile state lives here |
+| Script JVM launch | Client (`dclient` exec / CLI fork) | Already outside the daemon |
 | Annotation parse / resolve orchestration | JVM | **No** — talks to Coursier + Kotlin APIs |
 | IPC accept loop + framing | JVM (+ Rust client) | Optional only; UDS already covers the important IPC win |
 | Process spawn / idle / port-file supervisor | JVM `ProcessBuilder` | **Maybe** thin Rust sidecar later — not required |
 | Hasher / zip helpers | JVM | Only if profiling shows a hotspot; FFI marshaling often eats the gain |
 
 **Async I/O:** not used for the daemon protocol. Local CLI traffic is low-QPS; blocking
-sockets + a worker thread (with single-flight script execution) match the workload.
+sockets + concurrent compile workers match the workload.
 
 ## Benchmarks
 

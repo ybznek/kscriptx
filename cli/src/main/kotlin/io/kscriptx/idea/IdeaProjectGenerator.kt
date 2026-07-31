@@ -115,13 +115,13 @@ object IdeaProjectGenerator {
             |
             |kotlin {
             |    compilerOptions {
-            |        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+            |        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_${io.kscriptx.KscriptVersions.JVM})
             |    }
             |}
             |
             |java {
-            |    sourceCompatibility = JavaVersion.VERSION_17
-            |    targetCompatibility = JavaVersion.VERSION_17
+            |    sourceCompatibility = JavaVersion.VERSION_${io.kscriptx.KscriptVersions.JVM}
+            |    targetCompatibility = JavaVersion.VERSION_${io.kscriptx.KscriptVersions.JVM}
             |}
             """.trimMargin() + "\n"
         )

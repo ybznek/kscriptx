@@ -19,7 +19,7 @@ object DepsClasspathStore {
             appendLine(script.config.compilerOptions.joinToString(" "))
             appendLine(entryPoint)
             appendLine(KscriptVersions.KOTLIN)
-            appendLine("17")
+            appendLine(KscriptVersions.JVM)
         }
     )
 

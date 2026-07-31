@@ -2,6 +2,10 @@ package io.kscriptx.daemon
 
 import io.kscriptx.ExecutionContext
 import io.kscriptx.KPaths
+import io.kscriptx.cli.ArgParser
+import io.kscriptx.exec.ScriptRunPlan
+import io.kscriptx.exec.ScriptRunner
+import io.kscriptx.model.RunMode
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -18,10 +22,9 @@ import java.nio.channels.ServerSocketChannel
 import java.nio.channels.SocketChannel
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.locks.ReentrantLock
 import java.nio.file.attribute.PosixFilePermission
-import kotlin.concurrent.withLock
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.io.path.Path
 import kotlin.io.path.createDirectories
 import kotlin.io.path.deleteIfExists
 import kotlin.io.path.div
@@ -31,7 +34,9 @@ import kotlin.io.path.writeText
 import kotlin.system.exitProcess
 
 /**
- * Persistent local JVM that answers run requests over a local socket.
+ * Persistent local JVM that **compiles** scripts for clients over a local socket.
+ * Script JVMs are always started by the **original client** (or `kscriptx-dclient`),
+ * never inside this process — so killing the client PID tears down the script.
  *
  * Transport (prefer Unix domain socket; TCP loopback on Windows / fallback):
  *   - `$home/daemon/sock` — AF_UNIX socket path when present
@@ -40,11 +45,12 @@ import kotlin.system.exitProcess
  * Wire protocol (big-endian), identical on both transports:
  *   str: i32 length + UTF-8 bytes
  *   request: cwd:str, envCount:i32, (key:str, value:str)*, argc:i32, args:str*
- *   response chunks: u8 type ('O'|'E'|'X');
- *     O/E → i32 len + bytes; X → i32 exitCode
+ *   response chunks:
+ *     'O'|'E' → i32 len + bytes (compile diagnostics)
+ *     'R' → run plan: javaBin:str, cwd:str, argc:i32, args:str*
+ *     'X' → i32 exitCode (compile / request failure; no 'R')
  *
- * Script execution is single-flight: [System.out]/[System.err]/`user.dir` are
- * process-global, so concurrent runs would cross-talk. Pings stay concurrent.
+ * Compiles may run concurrently (no shared run lock). Pings stay concurrent.
  */
 object Daemon {
     /** Default idle timeout before the daemon exits (overridable via env). */
@@ -55,9 +61,6 @@ object Daemon {
     }
     private val running = AtomicBoolean(false)
     private val lastActivityMs = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
-
-    /** Exclusive lock for script runs (stdout/stderr/`user.dir` isolation). */
-    private val runLock = ReentrantLock()
 
     /** Per-process override from `--no-daemon` / `--daemon` CLI flags. Null = env default. */
     @Volatile
@@ -148,7 +151,6 @@ object Daemon {
                 ch.bind(UnixDomainSocketAddress.of(sockFile()))
                 restrictSocketToOwner(sockFile())
                 unixServer = ch
-                // Marker so clients know UDS is active (path is sockFile itself).
                 portFile().deleteIfExists()
             } catch (e: Exception) {
                 System.err.println("kscriptx-daemon: UDS bind failed (${e.message}); falling back to TCP")
@@ -163,6 +165,7 @@ object Daemon {
         }
 
         pidFile().writeText(ProcessHandle.current().pid().toString())
+        DaemonIo.ensureInstalled()
         Runtime.getRuntime().addShutdownHook(Thread {
             try {
                 cleanupEndpointFiles()
@@ -248,31 +251,33 @@ object Daemon {
             val argc = input.readInt()
             val args = Array(argc) { input.readStr() }
 
-            ExecutionContext.withContext(env, cwd) {
-                runLock.withLock {
-                    val oldOut = System.out
-                    val oldErr = System.err
-                    val outStream = FramingPrintStream(output, 'O'.code)
-                    val errStream = FramingPrintStream(output, 'E'.code)
-                    System.setOut(outStream)
-                    System.setErr(errStream)
-                    val code = try {
-                        System.setProperty("KSCRIPTX_IN_DAEMON", "1")
-                        io.kscriptx.runMain(args, fromDaemon = true, clientEnv = env)
-                    } catch (t: Throwable) {
-                        t.printStackTrace(errStream)
-                        1
-                    } finally {
-                        System.clearProperty("KSCRIPTX_IN_DAEMON")
-                        System.setOut(oldOut)
-                        System.setErr(oldErr)
-                        outStream.flush()
-                        errStream.flush()
+            // Compile only — never start the script JVM here.
+            ExecutionContext.withContext(env, cwd, mutateProcessUserDir = false) {
+                val outStream = FramingPrintStream(output, 'O'.code)
+                val errStream = FramingPrintStream(output, 'E'.code)
+                DaemonIo.bind(outStream, errStream)
+                try {
+                    val plan = compileRunPlan(args, env, cwd)
+                    if (plan == null) {
+                        output.writeByte('X'.code)
+                        output.writeInt(1)
+                        output.flush()
+                    } else {
+                        writeRunPlan(output, plan)
                     }
+                    0
+                } catch (t: Throwable) {
+                    t.printStackTrace(errStream)
+                    outStream.flush()
+                    errStream.flush()
                     output.writeByte('X'.code)
-                    output.writeInt(code)
+                    output.writeInt(1)
                     output.flush()
-                    code
+                    1
+                } finally {
+                    outStream.flush()
+                    errStream.flush()
+                    DaemonIo.unbind()
                 }
             }
         } catch (_: Exception) {
@@ -280,9 +285,29 @@ object Daemon {
         }
     }
 
-    /** Returns exit code if the daemon handled the request; null to fall back to local JVM. */
+    /**
+     * Ask the daemon to compile; on success run the script JVM in **this** process tree.
+     * Returns exit code, or null to fall back to a full local compile+run.
+     */
     fun tryClient(args: Array<String>): Int? {
         if (!enabled()) return null
+        val parsed = ArgParser.parse(args)
+        // Daemon is compile-only for RUN; other modes stay local.
+        if (parsed.mode != RunMode.RUN) return null
+        return when (val outcome = requestCompile(args)) {
+            is CompileOutcome.Ready -> ScriptRunner.executePlan(outcome.plan, execEnv = null)
+            is CompileOutcome.Failed -> outcome.exitCode
+            CompileOutcome.Unreachable -> null
+        }
+    }
+
+    private sealed class CompileOutcome {
+        data class Ready(val plan: ScriptRunPlan) : CompileOutcome()
+        data class Failed(val exitCode: Int) : CompileOutcome()
+        data object Unreachable : CompileOutcome()
+    }
+
+    private fun requestCompile(args: Array<String>): CompileOutcome {
         return try {
             openClientStreams()?.use { (inp, out) ->
                 out.writeStr(System.getProperty("user.dir") ?: "")
@@ -305,16 +330,50 @@ object Daemon {
                             System.err.write(buf)
                             System.err.flush()
                         }
-                        'X' -> return inp.readInt()
-                        else -> return 1
+                        // Return plan; `use` closes the socket *before* the script JVM starts.
+                        'R' -> return@use CompileOutcome.Ready(readRunPlan(inp))
+                        'X' -> return@use CompileOutcome.Failed(inp.readInt())
+                        else -> return@use CompileOutcome.Failed(1)
                     }
                 }
                 @Suppress("UNREACHABLE_CODE")
-                null
-            }
+                CompileOutcome.Unreachable
+            } ?: CompileOutcome.Unreachable
         } catch (_: Exception) {
-            null
+            CompileOutcome.Unreachable
         }
+    }
+
+    private fun compileRunPlan(
+        args: Array<String>,
+        env: Map<String, String>,
+        cwd: String,
+    ): ScriptRunPlan? {
+        val compiled = io.kscriptx.compileOnlyForRun(args) ?: return null
+        val request = ArgParser.parse(args)
+        return ScriptRunner.buildRunPlan(
+            compiled = compiled,
+            scriptArgs = request.scriptArgs,
+            workingDir = Path(cwd),
+            execEnv = env,
+        )
+    }
+
+    private fun writeRunPlan(output: DataOutputStream, plan: ScriptRunPlan) {
+        output.writeByte('R'.code)
+        output.writeStr(plan.javaBinary)
+        output.writeStr(plan.workingDir)
+        output.writeInt(plan.javaArgs.size)
+        for (a in plan.javaArgs) output.writeStr(a)
+        output.flush()
+    }
+
+    private fun readRunPlan(input: DataInputStream): ScriptRunPlan {
+        val javaBin = input.readStr()
+        val cwd = input.readStr()
+        val n = input.readInt()
+        val args = List(n) { input.readStr() }
+        return ScriptRunPlan(javaBinary = javaBin, javaArgs = args, workingDir = cwd)
     }
 
     private data class ClientStreams(val input: DataInputStream, val output: DataOutputStream) : AutoCloseable {
@@ -412,7 +471,7 @@ private fun DataInputStream.readStr(): String {
     return String(bytes, StandardCharsets.UTF_8)
 }
 
-/** Buffers frames to cut syscall/flush overhead on chatty scripts. */
+/** Buffers frames to cut syscall/flush overhead on chatty compile logs. */
 private class FramingPrintStream(
     private val sink: DataOutputStream,
     private val frameType: Int,

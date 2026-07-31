@@ -3,12 +3,16 @@ package io.kscriptx
 import io.kscriptx.bootstrap.BootstrapHeader
 import io.kscriptx.cli.ArgParser
 import io.kscriptx.compile.CacheStore
+import io.kscriptx.compile.CompileBeside
 import io.kscriptx.compile.FastCache
 import io.kscriptx.compile.ScriptCompiler
 import io.kscriptx.config.UserConfig
 import io.kscriptx.daemon.Daemon
 import io.kscriptx.exec.ScriptRunner
 import io.kscriptx.idea.IdeaProjectGenerator
+import io.kscriptx.model.CliRequest
+import io.kscriptx.model.CompiledScript
+import io.kscriptx.model.ResolvedScript
 import io.kscriptx.model.RunMode
 import io.kscriptx.pack.PackageBuilder
 import io.kscriptx.repl.InteractiveRepl
@@ -26,7 +30,7 @@ fun main(args: Array<String>) {
 
     val filtered = ArgParser.applyDaemonFlags(args)
 
-    // Prefer persistent daemon for normal script runs (skips JVM startup).
+    // Prefer persistent daemon for compile (script JVM starts in this process tree).
     if (Daemon.enabled() &&
         filtered.isNotEmpty() &&
         filtered[0] != "--daemon-server" &&
@@ -35,7 +39,7 @@ fun main(args: Array<String>) {
         Daemon.tryClient(filtered)?.let { exitProcess(it) }
     }
 
-    val code = runMain(filtered, fromDaemon = System.getenv("KSCRIPTX_IN_DAEMON") == "1")
+    val code = runMain(filtered)
     if (System.getenv("KSCRIPTX_IN_DAEMON") != "1") {
         Daemon.spawnBackgroundIfNeeded()
     }
@@ -43,10 +47,85 @@ fun main(args: Array<String>) {
 }
 
 /**
- * Shared entry for direct JVM runs and the daemon worker.
- * @return process exit code (does not call exitProcess when [fromDaemon] is true for RUN)
+ * Compile a RUN request to a [CompiledScript], or null if the request is not a runnable script.
+ * Used by the daemon (compile-only); the client starts the script JVM.
  */
-fun runMain(args: Array<String>, fromDaemon: Boolean, clientEnv: Map<String, String>? = null): Int {
+fun compileOnlyForRun(args: Array<String>): CompiledScript? {
+    val request = ArgParser.parse(args)
+    if (request.mode != RunMode.RUN) return null
+    val scriptSource = request.scriptSource ?: return null
+
+    if (!request.textMode) {
+        val asFile = resolveScriptPath(scriptSource)
+        if (asFile.isRegularFile()) {
+            FastCache.probeFileScript(asFile, textMode = false)?.let { compiled ->
+                maybeCompileBesideAfterFastHit(request, asFile, compiled)
+                return compiled
+            }
+        }
+    }
+
+    KPaths.ensureRuntimeLayout()
+    val userConfig = UserConfig.load()
+    val resolved = ScriptResolver.resolve(
+        source = scriptSource,
+        scriptArgs = request.scriptArgs,
+        textMode = request.textMode,
+        userConfig = userConfig,
+    )
+    val compiled = ScriptCompiler.compile(resolved)
+    resolved.rootFile?.let { root ->
+        FastCache.remember(
+            scriptPath = root,
+            textMode = request.textMode,
+            compiled = compiled,
+            importOrigins = resolved.sources.mapNotNull { it.origin },
+        )
+    }
+    CompileBeside.maybeMaterialize(request.compileBeside, resolved, compiled)
+    return compiled
+}
+
+/** Resolve script path against [ExecutionContext.userDir] (daemon-safe, no process user.dir). */
+internal fun resolveScriptPath(scriptSource: String): java.nio.file.Path {
+    val raw = Path(scriptSource)
+    val abs = if (raw.isAbsolute) {
+        raw
+    } else {
+        val base = ExecutionContext.userDir().ifBlank { System.getProperty("user.dir") ?: "." }
+        Path(base).resolve(raw)
+    }
+    return abs.toAbsolutePath().normalize()
+}
+
+/**
+ * Fast-cache hits skip [ScriptResolver]; rebuild a minimal [ResolvedScript] so
+ * `--compile-beside` can still mirror artifacts next to the file.
+ */
+private fun maybeCompileBesideAfterFastHit(
+    request: CliRequest,
+    scriptPath: java.nio.file.Path,
+    compiled: CompiledScript,
+) {
+    if (!request.compileBeside) return
+    val stub = ResolvedScript(
+        displayName = scriptPath.fileName.toString(),
+        kind = if (scriptPath.fileName.toString().endsWith(".kt")) {
+            io.kscriptx.model.ScriptKind.KT
+        } else {
+            io.kscriptx.model.ScriptKind.KTS
+        },
+        rootFile = scriptPath,
+        sources = emptyList(),
+        config = io.kscriptx.model.ScriptConfig(),
+        scriptArgs = request.scriptArgs,
+        rawHashMaterial = "",
+    )
+    CompileBeside.maybeMaterialize(true, stub, compiled)
+}
+
+/** Local entry when the daemon is unavailable or disabled. */
+fun runMain(args: Array<String>): Int {
     val request = ArgParser.parse(args)
     when (request.mode) {
         RunMode.HELP -> {
@@ -70,7 +149,16 @@ fun runMain(args: Array<String>, fromDaemon: Boolean, clientEnv: Map<String, Str
         ?: run {
             val msg = when (request.mode) {
                 RunMode.IDEA -> "Missing script path for --idea"
-                RunMode.PACKAGE -> "Missing script path for --package"
+                RunMode.PACKAGE ->
+                    when {
+                        request.nativeRunner -> "Missing script path for --native-runner"
+                        request.nativeShared -> "Missing script path for --native-shared"
+                        request.nativeImage -> "Missing script path for --native"
+                        request.standaloneJar && !request.writeLauncher && !request.proguard ->
+                            "Missing script path for --jar"
+                        request.proguard -> "Missing script path for --proguard"
+                        else -> "Missing script path for --package"
+                    }
                 RunMode.INTERACTIVE -> "Missing script path for --interactive"
                 RunMode.ADD_BOOTSTRAP -> "Missing script path for --add-bootstrap-header"
                 else -> "Missing script argument"
@@ -90,11 +178,8 @@ fun runMain(args: Array<String>, fromDaemon: Boolean, clientEnv: Map<String, Str
         val asFile = Path(request.scriptSource).toAbsolutePath().normalize()
         if (asFile.isRegularFile()) {
             FastCache.probeFileScript(asFile, textMode = false)?.let { compiled ->
-                return ScriptRunner.run(
-                    compiled,
-                    request.scriptArgs,
-                    execEnv = clientEnv,
-                )
+                maybeCompileBesideAfterFastHit(request, asFile, compiled)
+                return ScriptRunner.run(compiled, request.scriptArgs)
             }
         }
     }
@@ -117,11 +202,29 @@ fun runMain(args: Array<String>, fromDaemon: Boolean, clientEnv: Map<String, Str
         }
         RunMode.INTERACTIVE -> {
             val compiled = ScriptCompiler.compile(resolved)
+            CompileBeside.maybeMaterialize(request.compileBeside, resolved, compiled)
             InteractiveRepl.start(resolved, compiled)
         }
         RunMode.PACKAGE -> {
             val compiled = ScriptCompiler.compile(resolved)
-            PackageBuilder.packageBinary(resolved, compiled)
+            CompileBeside.maybeMaterialize(request.compileBeside, resolved, compiled)
+            PackageBuilder.packageBinary(
+                resolved,
+                compiled,
+                PackageBuilder.Options(
+                    nativeImage = request.nativeImage,
+                    nativeShared = request.nativeShared,
+                    nativeRunner = request.nativeRunner,
+                    nativeConfigDir = request.nativeConfigDir,
+                    nativeImageArgs = request.nativeImageArgs,
+                    graalvmHome = request.graalvmHome,
+                    proguard = request.proguard,
+                    proguardHome = request.proguardHome,
+                    proguardJar = request.proguardJar,
+                    writeLauncher = request.writeLauncher,
+                    compileBeside = request.compileBeside,
+                ),
+            )
             0
         }
         RunMode.RUN -> {
@@ -134,7 +237,8 @@ fun runMain(args: Array<String>, fromDaemon: Boolean, clientEnv: Map<String, Str
                     importOrigins = resolved.sources.mapNotNull { it.origin },
                 )
             }
-            ScriptRunner.run(compiled, resolved.scriptArgs, execEnv = clientEnv)
+            CompileBeside.maybeMaterialize(request.compileBeside, resolved, compiled)
+            ScriptRunner.run(compiled, resolved.scriptArgs)
         }
         RunMode.HELP, RunMode.VERSION, RunMode.CLEAR_CACHE, RunMode.ADD_BOOTSTRAP ->
             error("Unhandled mode ${request.mode}")

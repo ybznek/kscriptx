@@ -5,12 +5,13 @@ plugins {
 }
 
 group = "io.kscriptx"
-version = "0.1.5"
+version = "0.1.6"
 
 repositories {
     mavenCentral()
 }
 
+val kotlinVersion = "2.4.10"
 val compilerClasspath = configurations.create("compilerClasspath")
 val resolveClasspath = configurations.create("resolveClasspath")
 
@@ -19,7 +20,7 @@ dependencies {
     // Coursier only on resolve classpath — loaded lazily on dependency cache miss.
     resolveClasspath("io.get-coursier:interface:1.0.28")
     // Input jars for scripts/build-native-kotlinc.sh (not on the CLI runtime classpath).
-    compilerClasspath("org.jetbrains.kotlin:kotlin-compiler-embeddable:2.4.10")
+    compilerClasspath("org.jetbrains.kotlin:kotlin-compiler-embeddable:$kotlinVersion")
     testImplementation(kotlin("test"))
 }
 

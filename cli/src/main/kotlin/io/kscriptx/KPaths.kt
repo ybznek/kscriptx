@@ -28,17 +28,15 @@ object KPaths {
     }
 
     private fun resolveHome(): Path {
-        ExecutionContext.getenv("KSCRIPTX_DIRECTORY")?.let { return Path(it) }
-        ExecutionContext.getenv("KSCRIPT_DIRECTORY")?.let { return Path(it) }
-        val os = System.getProperty("os.name").lowercase()
-        return when {
-            os.contains("win") -> {
+        overrideDirectory()?.let { return it }
+        return when (osFamily()) {
+            OsFamily.WINDOWS -> {
                 val local = ExecutionContext.getenv("LOCALAPPDATA")
                 if (!local.isNullOrBlank()) Path(local) / "kscriptx"
                 else Path(System.getProperty("user.home")) / ".kscriptx"
             }
-            os.contains("mac") -> Path(System.getProperty("user.home")) / "Library" / "Application Support" / "kscriptx"
-            else -> {
+            OsFamily.MAC -> Path(System.getProperty("user.home")) / "Library" / "Application Support" / "kscriptx"
+            OsFamily.LINUX -> {
                 val xdg = ExecutionContext.getenv("XDG_CACHE_HOME")
                 if (!xdg.isNullOrBlank()) Path(xdg) / "kscriptx"
                 else Path(System.getProperty("user.home")) / ".kscriptx"
@@ -47,21 +45,37 @@ object KPaths {
     }
 
     private fun resolveConfigFile(): Path {
-        ExecutionContext.getenv("KSCRIPTX_DIRECTORY")?.let { return Path(it) / "kscript.properties" }
-        ExecutionContext.getenv("KSCRIPT_DIRECTORY")?.let { return Path(it) / "kscript.properties" }
-        val os = System.getProperty("os.name").lowercase()
-        return when {
-            os.contains("win") -> {
+        overrideDirectory()?.let { return it / "kscript.properties" }
+        return when (osFamily()) {
+            OsFamily.WINDOWS -> {
                 val local = ExecutionContext.getenv("LOCALAPPDATA")
                 if (!local.isNullOrBlank()) Path(local) / "kscriptx" / "kscript.properties"
                 else Path(System.getProperty("user.home")) / ".config" / "kscriptx" / "kscript.properties"
             }
-            os.contains("mac") -> Path(System.getProperty("user.home")) / "Library" / "Application Support" / "kscriptx" / "kscript.properties"
-            else -> {
+            OsFamily.MAC -> Path(System.getProperty("user.home")) /
+                "Library" / "Application Support" / "kscriptx" / "kscript.properties"
+            OsFamily.LINUX -> {
                 val xdg = ExecutionContext.getenv("XDG_CONFIG_HOME")
                 if (!xdg.isNullOrBlank()) Path(xdg) / "kscriptx" / "kscript.properties"
                 else Path(System.getProperty("user.home")) / ".config" / "kscriptx" / "kscript.properties"
             }
+        }
+    }
+
+    private fun overrideDirectory(): Path? {
+        ExecutionContext.getenv("KSCRIPTX_DIRECTORY")?.let { return Path(it) }
+        ExecutionContext.getenv("KSCRIPT_DIRECTORY")?.let { return Path(it) }
+        return null
+    }
+
+    private enum class OsFamily { WINDOWS, MAC, LINUX }
+
+    private fun osFamily(): OsFamily {
+        val os = System.getProperty("os.name").lowercase()
+        return when {
+            os.contains("win") -> OsFamily.WINDOWS
+            os.contains("mac") -> OsFamily.MAC
+            else -> OsFamily.LINUX
         }
     }
 }

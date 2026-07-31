@@ -2,7 +2,6 @@ package io.kscriptx
 
 import java.nio.file.Files
 import java.nio.file.Path
-import kotlin.io.path.Path
 
 /**
  * Optional per-request environment overlay (daemon client env) and working directory.
@@ -12,9 +11,8 @@ object ExecutionContext {
     private val envOverlay = ThreadLocal<Map<String, String>?>()
     private val cwdOverlay = ThreadLocal<String?>()
 
-    private val envVarPattern = Regex("""\{\{(\w+)\}\}""")
-
-    fun currentEnv(): Map<String, String>? = envOverlay.get()
+    /** `{{NAME}}` placeholders in script sources / `@Repository` values. */
+    val envVarPattern = Regex("""\{\{(\w+)\}\}""")
 
     fun getenv(name: String): String? = envOverlay.get()?.get(name) ?: System.getenv(name)
 
@@ -22,17 +20,25 @@ object ExecutionContext {
         ?: System.getProperty("user.dir")
         ?: ""
 
-    fun withContext(env: Map<String, String>, cwd: String, block: () -> Int): Int {
+    fun withContext(
+        env: Map<String, String>,
+        cwd: String,
+        mutateProcessUserDir: Boolean = true,
+        block: () -> Int,
+    ): Int {
         envOverlay.set(env)
         cwdOverlay.set(cwd)
         val previousDir = System.getProperty("user.dir")
         try {
-            if (cwd.isNotBlank()) {
+            // Concurrent daemon compiles must not clobber process-global user.dir.
+            if (mutateProcessUserDir && cwd.isNotBlank()) {
                 System.setProperty("user.dir", cwd)
             }
             return block()
         } finally {
-            System.setProperty("user.dir", previousDir)
+            if (mutateProcessUserDir) {
+                System.setProperty("user.dir", previousDir)
+            }
             envOverlay.remove()
             cwdOverlay.remove()
         }
